@@ -5914,20 +5914,20 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	if (test_bit(__E1000_DOWN, &adapter->state)) {
 		if (!adapter->ecdev)
 			dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
+		return NETDEV_TX_BUSY;
 	}
 
 	if (skb->len <= 0) {
 		if (!adapter->ecdev)
 			dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
+		return NETDEV_TX_BUSY;
 	}
 
 	/* The minimum packet size with TCTL.PSP set is 17 bytes so
 	 * pad skb in order to meet this minimum size requirement
 	 */
 	if (skb_put_padto(skb, 17))
-		return NETDEV_TX_OK;
+		return NETDEV_TX_BUSY;
 
 	mss = skb_shinfo(skb)->gso_size;
 	if (mss) {
@@ -5949,7 +5949,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 				e_err("__pskb_pull_tail failed.\n");
 				if (!adapter->ecdev)
 					dev_kfree_skb_any(skb);
-				return NETDEV_TX_OK;
+				return NETDEV_TX_BUSY;
 			}
 			len = skb_headlen(skb);
 		}
@@ -5988,7 +5988,7 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 	if (tso < 0) {
 		if (!adapter->ecdev)
 			dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
+		return NETDEV_TX_BUSY;
 	}
 
 	if (tso)
