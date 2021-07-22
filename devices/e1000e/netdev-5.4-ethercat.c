@@ -6028,7 +6028,13 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 		netdev_sent_queue(netdev, skb->len);
 		e1000_tx_queue(tx_ring, tx_flags, count);
 		/* Make sure there is space in the ring for the next send. */
-		if (!adapter->ecdev) {
+		if (adapter->ecdev) {
+			// Do not call e1000e_update_tdt_wa(), because it busy-waits.
+			// So the FLAG2_PCIM2PCI_ARBITER_WA is not active in EtherCAT.
+			// Instead, just set the ring pointer.
+			writel(tx_ring->next_to_use, tx_ring->tail);
+		}
+		else {
 			e1000_maybe_stop_tx(tx_ring,
 					    (MAX_SKB_FRAGS *
 					     DIV_ROUND_UP(PAGE_SIZE,
