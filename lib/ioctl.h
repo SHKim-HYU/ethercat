@@ -47,9 +47,9 @@
 
 #ifdef USE_RTDM
 
-#define ioctl rt_dev_ioctl
+#define ioctl rtdm_ioctl
 
-/* rt_dev_ioctl() returns negative error code */
+/* rtdm_ioctl() returns negative error code */
 #define EC_IOCTL_IS_ERROR(X) ((X) < 0)
 #define EC_IOCTL_ERRNO(X) (-(X))
 

@@ -91,7 +91,7 @@ void ec_master_clear(ec_master_t *master)
 
     if (master->fd != -1) {
 #if USE_RTDM
-        rt_dev_close(master->fd);
+        rtdm_close(master->fd);
 #else
         close(master->fd);
 #endif

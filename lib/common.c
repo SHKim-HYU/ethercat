@@ -95,7 +95,7 @@ ec_master_t *ecrt_open_master(unsigned int master_index)
             master_index);
 
 #ifdef USE_RTDM
-    master->fd = rt_dev_open(path, O_RDWR);
+    master->fd = rtdm_open(path, O_RDWR);
 #else
     master->fd = open(path, O_RDWR);
 #endif
