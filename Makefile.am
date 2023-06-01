@@ -52,7 +52,7 @@ if ENABLE_USERLIB
 # userspace examples depend on lib/
 SUBDIRS += \
 	lib \
-	examples
+	#examples
 endif
 
 if ENABLE_TTY
