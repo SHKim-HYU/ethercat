@@ -38,11 +38,10 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <rtdm/rtdm.h>
-#include <native/task.h>
-#include <native/sem.h>
-#include <native/mutex.h>
-#include <native/timer.h>
-#include <rtdk.h>
+#include <alchemy/task.h>
+#include <alchemy/sem.h>
+#include <alchemy/mutex.h>
+#include <alchemy/timer.h>
 #include <pthread.h>
 
 #include "ecrt.h"
@@ -263,7 +262,7 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    ret = rt_task_create(&my_task, "my_task", 0, 80, T_FPU);
+    ret = rt_task_create(&my_task, "my_task", 0, 80, 0);
     if (ret < 0) {
         fprintf(stderr, "Failed to create task: %s\n", strerror(-ret));
         return -1;
