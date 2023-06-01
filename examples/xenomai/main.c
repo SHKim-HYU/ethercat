@@ -42,6 +42,7 @@
 #include <alchemy/sem.h>
 #include <alchemy/mutex.h>
 #include <alchemy/timer.h>
+#include <cobalt/stdio.h>
 #include <pthread.h>
 
 #include "ecrt.h"
