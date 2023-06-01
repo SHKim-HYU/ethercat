@@ -1129,22 +1129,6 @@ AC_CONFIG_FILES([
         devices/igb/Kbuild
         devices/igb/Makefile
         ethercat.spec
-        #examples/Kbuild
-        #examples/Makefile
-        #examples/dc_rtai/Kbuild
-        #examples/dc_rtai/Makefile
-        #examples/dc_user/Makefile
-        #examples/mini/Kbuild
-        #examples/mini/Makefile
-        #examples/rtai/Kbuild
-        #examples/rtai/Makefile
-        #examples/rtai_rtdm/Makefile
-        #examples/rtai_rtdm_dc/Makefile
-        #examples/tty/Kbuild
-        #examples/tty/Makefile
-        #examples/user/Makefile
-        #examples/xenomai/Makefile
-        #examples/xenomai_posix/Makefile
         include/Makefile
         lib/Makefile
         lib/libethercat.pc
@@ -1162,4 +1146,20 @@ AC_CONFIG_FILES([
 ])
 AC_OUTPUT
 
+        #examples/Kbuild
+        #examples/Makefile
+        #examples/dc_rtai/Kbuild
+        #examples/dc_rtai/Makefile
+        #examples/dc_user/Makefile
+        #examples/mini/Kbuild
+        #examples/mini/Makefile
+        #examples/rtai/Kbuild
+        #examples/rtai/Makefile
+        #examples/rtai_rtdm/Makefile
+        #examples/rtai_rtdm_dc/Makefile
+        #examples/tty/Kbuild
+        #examples/tty/Makefile
+        #examples/user/Makefile
+        #examples/xenomai/Makefile
+        #examples/xenomai_posix/Makefile
 #------------------------------------------------------------------------------
