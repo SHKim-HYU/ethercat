@@ -641,8 +641,10 @@ else
     xeno_native_ldflags=`$xenomaidir/bin/xeno-config --alchemy --ldflags`
     xeno_posix_cflags=`$xenomaidir/bin/xeno-config --posix --cflags`
     xeno_posix_ldflags=`$xenomaidir/bin/xeno-config --posix --ldflags`
-    xeno_rtdm_cflags=`$xenomaidir/bin/xeno-config --rtdm --cflags` -fPIC -I/usr/xenomai/include
-    xeno_rtdm_ldflags=`$xenomaidir/bin/xeno-config --rtdm --ldflags` -fPIC
+    xeno_rtdm_cflags=`$xenomaidir/bin/xeno-config --rtdm --cflags` 
+    #-fPIC -I/usr/xenomai/include
+    xeno_rtdm_ldflags=`$xenomaidir/bin/xeno-config --rtdm --ldflags` 
+    #-fPIC
 fi
 
 AC_SUBST(XENOMAI_DIR,[$xenomaidir])
@@ -1127,22 +1129,22 @@ AC_CONFIG_FILES([
         devices/igb/Kbuild
         devices/igb/Makefile
         ethercat.spec
-        examples/Kbuild
-        examples/Makefile
-        examples/dc_rtai/Kbuild
-        examples/dc_rtai/Makefile
-        examples/dc_user/Makefile
-        examples/mini/Kbuild
-        examples/mini/Makefile
-        examples/rtai/Kbuild
-        examples/rtai/Makefile
-        examples/rtai_rtdm/Makefile
-        examples/rtai_rtdm_dc/Makefile
-        examples/tty/Kbuild
-        examples/tty/Makefile
-        examples/user/Makefile
-        examples/xenomai/Makefile
-        examples/xenomai_posix/Makefile
+        #examples/Kbuild
+        #examples/Makefile
+        #examples/dc_rtai/Kbuild
+        #examples/dc_rtai/Makefile
+        #examples/dc_user/Makefile
+        #examples/mini/Kbuild
+        #examples/mini/Makefile
+        #examples/rtai/Kbuild
+        #examples/rtai/Makefile
+        #examples/rtai_rtdm/Makefile
+        #examples/rtai_rtdm_dc/Makefile
+        #examples/tty/Kbuild
+        #examples/tty/Makefile
+        #examples/user/Makefile
+        #examples/xenomai/Makefile
+        #examples/xenomai_posix/Makefile
         include/Makefile
         lib/Makefile
         lib/libethercat.pc
