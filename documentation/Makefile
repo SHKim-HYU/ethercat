@@ -22,6 +22,7 @@ COMMANDS := \
 	foe_read \
 	foe_write \
 	graph \
+	ip \
 	master \
 	pdos \
 	reg_read \
@@ -54,37 +55,28 @@ $(EXT_FILES): $(ETHERCAT_CMD)
 pdf: $(EXT_FILES)
 	$(MAKE) -C images
 	$(MAKE) -C graphs
-
-# compile twice to update the table of contents
 	pdflatex $(LATEX_OPTIONS) $(FILE)
-	pdflatex $(LATEX_OPTIONS) $(FILE)
-
-	pdflatex $(LATEX_OPTIONS) $(FILE)_fr
-	pdflatex $(LATEX_OPTIONS) $(FILE)_fr
 
 index:
 	makeindex $(FILE)
 	makeindex $(FILE).nlo -s nomencl.ist -o $(FILE).nls
 
-	makeindex $(FILE)_fr
-	makeindex $(FILE)_fr.nlo -s nomencl.ist -o $(FILE)_fr.nls
-
 clean:
 	@rm -f \
-		*.aux \
-		*.dvi \
-		*.idx \
-		*.ilg \
-		*.ind \
-		*.lof \
-		*.log \
-		*.lol \
-		*.lot \
-		*.nlo \
-		*.nls \
-		*.out \
-		*.pdf \
-		*.toc \
+		$(FILE).aux \
+		$(FILE).dvi \
+		$(FILE).idx \
+		$(FILE).ilg \
+		$(FILE).ind \
+		$(FILE).lof \
+		$(FILE).log \
+		$(FILE).lol \
+		$(FILE).lot \
+		$(FILE).nlo \
+		$(FILE).nls \
+		$(FILE).out \
+		$(FILE).pdf \
+		$(FILE).toc \
 		*~ \
 		images/*.bak
 

@@ -292,7 +292,7 @@ static int ccat_dma_init(struct ccat_dma_mem *const dma, size_t channel,
 	iowrite32((u32) phys | ((phys_hi) > 0), ioaddr);
 	iowrite32(phys_hi, ioaddr + 4);
 
-	pr_info
+	pr_debug
 	    ("DMA%llu mem initialized\n base:         0x%p\n start:        0x%p\n phys:         0x%09llx\n pci addr:     0x%01x%08x\n size:         %llu |%llx bytes.\n",
 	     (u64) channel, dma->base, fifo->dma.start, (u64) dma->phys,
 	     ioread32(ioaddr + 4), ioread32(ioaddr),
@@ -539,12 +539,7 @@ static int ccat_eth_priv_init_dma(struct ccat_eth_priv *priv)
 	dma->dev = &pdev->dev;
 	dma->size = CCAT_ALIGNMENT * 3;
 	dma->base =
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
-        /* since kernel 5 memory is zero'd implicitly */
-	    dma_alloc_coherent(dma->dev, dma->size, &dma->phys, GFP_KERNEL);
-#else
 	    dma_zalloc_coherent(dma->dev, dma->size, &dma->phys, GFP_KERNEL);
-#endif
 	if (!dma->base || !dma->phys) {
 		pr_err("init DMA memory failed.\n");
 		return -ENOMEM;
@@ -755,14 +750,12 @@ static void poll_link(struct ccat_eth_priv *const priv)
 static void poll_rx(struct ccat_eth_priv *const priv)
 {
 	struct ccat_eth_fifo *const fifo = &priv->rx_fifo;
-	size_t rx_per_poll = FIFO_LENGTH / 2;
-	size_t len = fifo->ops->ready(fifo);
+	const size_t len = fifo->ops->ready(fifo);
 
-	while (len && --rx_per_poll) {
+	if (len) {
 		priv->receive(priv, len);
 		fifo->ops->add(fifo);
 		ccat_eth_fifo_inc(fifo);
-		len = fifo->ops->ready(fifo);
 	}
 }
 

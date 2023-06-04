@@ -26,55 +26,83 @@
 #  industrial property and similar rights of Beckhoff Automation GmbH.
 #
 #------------------------------------------------------------------------------
-include $(top_srcdir)/Makefile.kbuild
 
 ACLOCAL_AMFLAGS = -I m4
-
-AM_DISTCHECK_CONFIGURE_FLAGS = \
-	--disable-8139too \
-	--with-systemdsystemunitdir=$$dc_install_base/$(systemdsystemunitdir)
 
 SUBDIRS = \
 	include \
 	script
 
 if ENABLE_KERNEL
-SUBDIRS += \
-	devices \
-	master
+SUBDIRS += devices
+SUBDIRS += master
 endif
 
 if BUILD_TOOL
 SUBDIRS += tool
 endif
 
+if BUILD_MBG
+SUBDIRS += mailbox_gateway
+endif
+
 if ENABLE_USERLIB
-# userspace examples depend on lib/
-SUBDIRS += \
-	lib 
+SUBDIRS += lib
 endif
 
 if ENABLE_TTY
 SUBDIRS += tty
 endif
 
+# userspace example depends on lib/
+SUBDIRS += examples
+
+DIST_SUBDIRS = \
+	devices \
+	examples \
+	include \
+	lib \
+	m4 \
+	mailbox_gateway \
+	master \
+	script \
+	tool \
+	tty
 
 noinst_HEADERS = \
 	globals.h
 
 EXTRA_DIST = \
+	Doxyfile.in \
 	FEATURES \
+	Kbuild.in \
 	README.EoE \
+	ethercat.spec \
+	ethercat.spec.in
+
+BUILT_SOURCES = \
+	Doxyfile \
+	Kbuild \
 	ethercat.spec
 
+modules:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" modules
+
+modules_install:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" \
+		INSTALL_MOD_DIR="$(INSTALL_MOD_DIR)" modules_install
+
+clean-local:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" clean
+
 mydist:
-	git -C $(srcdir) log > ChangeLog
-	@REV=`git -C $(srcdir) describe` && \
+	hg log --style=changelog $(srcdir) > ChangeLog
+	@REV=`hg id -i $(srcdir)` && \
 		$(MAKE) dist-bzip2 distdir=$(PACKAGE)-$(VERSION)-$${REV}
 
 dist-hook:
-	-if which git >/dev/null 2>&1; then \
-		git -C $(srcdir) describe 2>/dev/null >$(distdir)/revision; \
+	if which hg >/dev/null 2>&1; then \
+		hg id -i $(srcdir) 2>/dev/null >$(distdir)/revision; \
 	fi
 
 mrproper: clean cleandoc
@@ -96,7 +124,11 @@ mrproper: clean cleandoc
 		configure \
 		configure.in \
 		libtool \
-		stamp-h1
+		stamp-h1 \
+		ethercat.spec \
+		script/init.d/ethercat \
+		m4/*.m4 \
+		`find -path ./documentation -prune -o "(" -name Makefile -o -name Makefile.in -o -name Kbuild -o -name .deps -o -name Module.symvers -o -name .tmp_versions ")" -print`
 
 doc:
 	doxygen Doxyfile

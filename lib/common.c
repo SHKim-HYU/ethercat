@@ -77,7 +77,7 @@ ec_master_t *ecrt_open_master(unsigned int master_index)
 
     master = malloc(sizeof(ec_master_t));
     if (!master) {
-        fprintf(stderr, "Failed to allocate memory.\n");
+        EC_PRINT_ERR("Failed to allocate memory.\n");
         return 0;
     }
 
@@ -87,33 +87,35 @@ ec_master_t *ecrt_open_master(unsigned int master_index)
     master->first_config = NULL;
 
     snprintf(path, MAX_PATH_LEN - 1,
-#ifdef USE_RTDM
+#if defined(USE_RTDM)
             "EtherCAT%u",
+#elif defined(USE_RTDM_XENOMAI_V3)
+            "/dev/rtdm/EtherCAT%u",
 #else
             "/dev/EtherCAT%u",
 #endif
             master_index);
 
 #ifdef USE_RTDM
-    master->fd = rtdm_open(path, O_RDWR);
+    master->fd = rt_dev_open(path, O_RDWR);
 #else
     master->fd = open(path, O_RDWR);
 #endif
     if (EC_IOCTL_IS_ERROR(master->fd)) {
-        fprintf(stderr, "Failed to open %s: %s\n", path,
+        EC_PRINT_ERR("Failed to open %s: %s\n", path,
                 strerror(EC_IOCTL_ERRNO(master->fd)));
         goto out_clear;
     }
 
     ret = ioctl(master->fd, EC_IOCTL_MODULE, &module_data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to get module information from %s: %s\n",
+        EC_PRINT_ERR("Failed to get module information from %s: %s\n",
                 path, strerror(EC_IOCTL_ERRNO(ret)));
         goto out_clear;
     }
 
     if (module_data.ioctl_version_magic != EC_IOCTL_VERSION_MAGIC) {
-        fprintf(stderr, "ioctl() version magic is differing:"
+        EC_PRINT_ERR("ioctl() version magic is differing:"
                 " %s: %u, libethercat: %u.\n",
                 path, module_data.ioctl_version_magic,
                 EC_IOCTL_VERSION_MAGIC);

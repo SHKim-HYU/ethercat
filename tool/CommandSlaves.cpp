@@ -58,7 +58,7 @@ string CommandSlaves::helpString(const string &binaryBaseName) const
         << endl
         << "1  5555:0  PREOP  +  EL3162 2C. Ana. Input 0-10V" << endl
         << "|  |    |  |      |  |" << endl
-        << "|  |    |  |      |  \\- Name from the SII if available," << endl
+        << "|  |    |  |      |  \\- Name from the SII if avaliable," << endl
         << "|  |    |  |      |     otherwise vendor ID and product" << endl
         << "|  |    |  |      |     code (both hexadecimal)." << endl
         << "|  |    |  |      \\- Error flag. '+' means no error," << endl
@@ -298,7 +298,9 @@ void CommandSlaves::showSlaves(
         cout << endl;
 
         for (i = 0; i < EC_MAX_PORTS; i++) {
-            cout << "   " << i << "  " << setfill(' ') << left << setw(4);
+            cout << "   " << i
+                 << (i == si->upstream_port ? "*" : " ")
+                 << " " << setfill(' ') << left << setw(4);
             switch (si->ports[i].desc) {
                 case EC_PORT_NOT_IMPLEMENTED:
                     cout << "N/A";
@@ -319,7 +321,8 @@ void CommandSlaves::showSlaves(
             cout << "  " << setw(4)
                 << (si->ports[i].link.link_up ? "up" : "down")
                 << "  " << setw(6)
-                << (si->ports[i].link.loop_closed ? "closed" : "open")
+                << (si->ports[i].link.loop_closed ? "closed" :
+                        (si->ports[i].link.bypassed ? "bypass" : "open"))
                 << "  " << setw(6)
                 << (si->ports[i].link.signal_detected ? "yes" : "no")
                 << "  " << setw(9) << right;
@@ -332,15 +335,17 @@ void CommandSlaves::showSlaves(
 
             if (si->dc_supported) {
                 cout << "  " << setw(11) << right;
-                if (!si->ports[i].link.loop_closed) {
+                if (!si->ports[i].link.loop_closed &&
+                        !si->ports[i].link.bypassed) {
                     cout << dec << si->ports[i].receive_time;
                 } else {
                     cout << "-";
                 }
                 cout << "  " << setw(10);
-                if (!si->ports[i].link.loop_closed) {
+                if (!si->ports[i].link.loop_closed &&
+                        !si->ports[i].link.bypassed) {
                     cout << si->ports[i].receive_time -
-                        si->ports[0].receive_time;
+                        si->ports[si->upstream_port].receive_time;
                 } else {
                     cout << "-";
                 }

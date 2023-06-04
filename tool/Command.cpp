@@ -30,6 +30,7 @@
  ****************************************************************************/
 
 #include <map>
+#include <iostream>
 using namespace std;
 
 #include "Command.h"
@@ -152,7 +153,8 @@ Command::Command(const string &name, const string &briefDesc):
     briefDesc(briefDesc),
     verbosity(Normal),
     emergency(false),
-    force(false)
+    force(false),
+    reset(false)
 {
 }
 
@@ -220,6 +222,13 @@ void Command::setForce(bool f)
 
 /*****************************************************************************/
 
+void Command::setReset(bool r)
+{
+    reset = r;
+};
+
+/*****************************************************************************/
+
 void Command::setOutputFile(const string &f)
 {
     outputFile = f;
@@ -231,6 +240,13 @@ void Command::setSkin(const string &s)
 {
     skin = s;
 };
+
+/****************************************************************************/
+
+bool Command::matches(const string &cmd) const
+{
+    return name == cmd;
+}
 
 /****************************************************************************/
 
@@ -270,21 +286,21 @@ string Command::numericInfo()
 
 /*****************************************************************************/
 
-void Command::throwInvalidUsageException(const stringstream &s) const
+void Command::throwInvalidUsageException(const stringstream &s)
 {
     throw InvalidUsageException(s);
 }
 
 /*****************************************************************************/
 
-void Command::throwCommandException(const string &msg) const
+void Command::throwCommandException(const string &msg)
 {
     throw CommandException(msg);
 }
 
 /*****************************************************************************/
 
-void Command::throwCommandException(const stringstream &s) const
+void Command::throwCommandException(const stringstream &s)
 {
     throw CommandException(s);
 }

@@ -35,20 +35,16 @@ AC_PREREQ(2.59)
 # - Write NEWS entry with changes since last release
 # - Check for complete Doxygen comments
 # - Update version number in documentation
-# - Update the ChangeLog -> git log > ChangeLog
+# - Update the ChangeLog -> hg log -bstable-1.5 --style=changelog > ChangeLog
 # - Update version number below
 # - make dist-bzip2
 #
 AC_INIT([ethercat],[1.5.2],[fp@igh-essen.com])
 AC_CONFIG_AUX_DIR([autoconf])
-AM_INIT_AUTOMAKE([-Wall -Wno-override -Werror dist-bzip2 subdir-objects])
-m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
+AM_INIT_AUTOMAKE([-Wall -Werror dist-bzip2 subdir-objects])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_SRCDIR([config.h.in])
 AC_CONFIG_MACRO_DIR([m4])
-AC_PROG_SED
-PKG_PROG_PKG_CONFIG
-PKG_INSTALLDIR()
 
 #------------------------------------------------------------------------------
 # Global
@@ -483,6 +479,61 @@ fi
 AC_SUBST(KERNEL_IGB,[$kerneligb])
 
 #------------------------------------------------------------------------------
+# cx2100 driver
+#------------------------------------------------------------------------------
+
+AC_ARG_ENABLE([cx2100],
+    AS_HELP_STRING([--enable-cx2100],
+                   [Enable cx2100 driver]),
+    [
+        case "${enableval}" in
+            yes) enablecx2100=1
+                ;;
+            no) enablecx2100=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-cx2100])
+                ;;
+        esac
+    ],
+    [enablecx2100=0] # disabled by default
+)
+
+AM_CONDITIONAL(ENABLE_CX2100, test "x$enablecx2100" = "x1")
+AC_SUBST(ENABLE_CX2100,[$enablecx2100])
+
+AC_ARG_WITH([cx2100-kernel],
+    AC_HELP_STRING(
+        [--with-cx2100-kernel=<X.Y.Z>],
+        [cx2100 kernel (only if differing)]
+    ),
+    [
+        kernelcx2100=[$withval]
+    ],
+    [
+        kernelcx2100=$linuxversion
+    ]
+)
+
+if test "x${enablecx2100}" = "x1"; then
+    AC_MSG_CHECKING([for kernel for cx2100 driver])
+
+    kernels=`ls -1 ${srcdir}/devices/cx2100/ | grep -oE "^cx2100-.*" | cut -d "-" -f 2 | uniq`
+    found=0
+    for k in $kernels; do
+        if test "$kernelcx2100" = "$k"; then
+            found=1
+        fi
+    done
+    if test $found -ne 1; then
+        AC_MSG_ERROR([kernel $kernelcx2100 not available for cx2100 driver!])
+    fi
+
+    AC_MSG_RESULT([$kernelcx2100])
+fi
+
+AC_SUBST(KERNEL_CX2100,[$kernelcx2100])
+
+#------------------------------------------------------------------------------
 # r8169 driver
 #------------------------------------------------------------------------------
 
@@ -536,6 +587,61 @@ if test "x${enable_r8169}" = "x1"; then
 fi
 
 AC_SUBST(KERNEL_R8169,[$kernel_r8169])
+
+#------------------------------------------------------------------------------
+# r8152 driver
+#------------------------------------------------------------------------------
+
+AC_ARG_ENABLE([r8152],
+    AS_HELP_STRING([--enable-r8152],
+                   [Enable r8152 driver]),
+    [
+        case "${enableval}" in
+            yes) enable_r8152=1
+                ;;
+            no) enable_r8152=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-r8152])
+                ;;
+        esac
+    ],
+    [enable_r8152=0] # disabled by default
+)
+
+AM_CONDITIONAL(ENABLE_R8152, test "x$enable_r8152" = "x1")
+AC_SUBST(ENABLE_R8152,[$enable_r8152])
+
+AC_ARG_WITH([r8152-kernel],
+    AC_HELP_STRING(
+        [--with-r8152-kernel=<X.Y.Z>],
+        [r8152 kernel (only if differing)]
+    ),
+    [
+        kernel_r8152=[$withval]
+    ],
+    [
+        kernel_r8152=$linuxversion
+    ]
+)
+
+if test "x${enable_r8152}" = "x1"; then
+    AC_MSG_CHECKING([for kernel for r8152 driver])
+
+    kernels=`ls -1 ${srcdir}/devices/ | grep -oE "^r8152-.*-" | cut -d "-" -f 2 | uniq`
+    found=0
+    for k in $kernels; do
+        if test "$kernel_r8152" = "$k"; then
+            found=1
+        fi
+    done
+    if test $found -ne 1; then
+        AC_MSG_ERROR([kernel $kernel_r8152 not available for r8152 driver!])
+    fi
+
+    AC_MSG_RESULT([$kernel_r8152])
+fi
+
+AC_SUBST(KERNEL_R8152,[$kernel_r8152])
 
 #------------------------------------------------------------------------------
 # CCAT driver
@@ -637,20 +743,37 @@ else
     fi
     AC_MSG_RESULT([$xenomaidir])
 
-    xeno_native_cflags=`$xenomaidir/bin/xeno-config --alchemy --cflags`
-    xeno_native_ldflags=`$xenomaidir/bin/xeno-config --alchemy --ldflags`
-    xeno_posix_cflags=`$xenomaidir/bin/xeno-config --posix --cflags`
-    xeno_posix_ldflags=`$xenomaidir/bin/xeno-config --posix --ldflags`
-    xeno_rtdm_cflags=`$xenomaidir/bin/xeno-config --rtdm --cflags` 
-    #-fPIC -I/usr/xenomai/include
-    xeno_rtdm_ldflags=`$xenomaidir/bin/xeno-config --rtdm --ldflags` 
-    #-fPIC
+    xenomai_ver=`grep -R "VERSION_STRING" ${xenomaidir}/include/xeno_config.h | awk '{print $3}'`
+    xenomai_ver=${xenomai_ver##\"}
+    xenomai_ver=${xenomai_ver%%\"}
+    echo "xenomai version: " $xenomai_ver
+
+    if test ${xenomai_ver%%.*} -gt 2; then
+        xeno_alchemy_cflags=`$xenomaidir/bin/xeno-config --skin alchemy --cflags`
+        xeno_alchemy_ldflags=`$xenomaidir/bin/xeno-config --skin alchemy --auto-init-solib --ldflags`
+        xeno_posix_ldflags=`$xenomaidir/bin/xeno-config --skin posix --auto-init-solib --ldflags`
+        xeno_rtdm_ldflags=`$xenomaidir/bin/xeno-config --skin rtdm --auto-init-solib --ldflags`
+        xeno_v3=1
+        xeno=0
+    else
+        xeno_native_cflags=`$xenomaidir/bin/xeno-config --skin native --cflags`
+        xeno_native_ldflags=`$xenomaidir/bin/xeno-config --skin native --ldflags`
+        xeno_posix_ldflags=`$xenomaidir/bin/xeno-config --skin posix --ldflags`
+        xeno_rtdm_ldflags=`$xenomaidir/bin/xeno-config --skin rtdm --ldflags`
+    fi
+
+    xeno_posix_cflags=`$xenomaidir/bin/xeno-config --skin posix --cflags`
+    xeno_rtdm_cflags=`$xenomaidir/bin/xeno-config --skin rtdm --cflags`
 fi
 
 AC_SUBST(XENOMAI_DIR,[$xenomaidir])
 AM_CONDITIONAL(ENABLE_XENOMAI, test "x$xeno" = "x1")
 AC_SUBST(ENABLE_XENOMAI,[$xeno])
+AM_CONDITIONAL(ENABLE_XENOMAI_V3, test "x$xeno_v3" = "x1")
+AC_SUBST(ENABLE_XENOMAI_V3,[$xeno_v3])
 
+AC_SUBST(XENOMAI_ALCHEMY_CFLAGS,[$xeno_alchemy_cflags])
+AC_SUBST(XENOMAI_ALCHEMY_LDFLAGS,[$xeno_alchemy_ldflags])
 AC_SUBST(XENOMAI_NATIVE_CFLAGS,[$xeno_native_cflags])
 AC_SUBST(XENOMAI_NATIVE_LDFLAGS,[$xeno_native_ldflags])
 AC_SUBST(XENOMAI_POSIX_CFLAGS,[$xeno_posix_cflags])
@@ -815,6 +938,35 @@ else
 fi
 
 #------------------------------------------------------------------------------
+# Realtime Mutex support
+#------------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether to use rtmutexes])
+
+AC_ARG_ENABLE([rtmutex],
+    AS_HELP_STRING([--enable-rtmutex],
+                   [Use rtmutexes for synchronization (default: no)]),
+    [
+        case "${enableval}" in
+            yes) rtmutex=1
+                ;;
+            no) rtmutex=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-rtmutex])
+                ;;
+        esac
+    ],
+    [rtmutex=0]
+)
+
+if test "x${rtmutex}" = "x1"; then
+    AC_DEFINE([EC_USE_RTMUTEX], [1], [Use rtmutex for synchronization])
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
+
+#------------------------------------------------------------------------------
 # High-resolution timer support
 #------------------------------------------------------------------------------
 
@@ -873,6 +1025,35 @@ else
 fi
 
 #------------------------------------------------------------------------------
+# Force the reference clock to OP even if unconfigured
+#------------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether to force the reference clock to OP])
+
+AC_ARG_ENABLE([refclkop],
+    AS_HELP_STRING([--enable-refclkop],
+                   [Force reference clock to OP (default: no)]),
+    [
+        case "${enableval}" in
+            yes) refclkop=1
+                ;;
+            no) refclkop=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-refclkop])
+                ;;
+        esac
+    ],
+    [refclkop=0]
+)
+
+if test "x${refclkop}" = "x1"; then
+    AC_DEFINE([EC_REFCLKOP], [1], [Force refclk to OP])
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
+
+#------------------------------------------------------------------------------
 # Command-line tool
 #-----------------------------------------------------------------------------
 
@@ -901,6 +1082,36 @@ else
 fi
 
 AM_CONDITIONAL(BUILD_TOOL, test "x$tool" = "x1")
+
+#------------------------------------------------------------------------------
+# mailbox gateway server
+#-----------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether to build the mailbox gateway server])
+
+AC_ARG_ENABLE([mbg],
+    AS_HELP_STRING([--enable-mbg],
+                   [Build mailbox gateway server (default: yes)]),
+    [
+        case "${enableval}" in
+            yes) mbg=1
+                ;;
+            no) mbg=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-mbg])
+                ;;
+        esac
+    ],
+    [mbg=1]
+)
+
+if test "x${mbg}" = "x1"; then
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
+
+AM_CONDITIONAL(BUILD_MBG, test "x$mbg" = "x1")
 
 #------------------------------------------------------------------------------
 # Userspace library generation
@@ -1055,6 +1266,107 @@ else
 fi
 
 #------------------------------------------------------------------------------
+# SII cache
+#------------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether to cache the SII for re-use])
+
+AC_ARG_ENABLE([sii-cache],
+    AS_HELP_STRING([--disable-sii-cache],
+                   [Disable SII cache for devices with aliases or serials]),
+    [
+        case "${enableval}" in
+            yes) siicache=1
+                ;;
+            no) siicache=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-sii-cache])
+                ;;
+        esac
+    ],
+    [siicache=1]
+)
+
+if test "x${siicache}" = "x1"; then
+    AC_DEFINE([EC_SII_CACHE], [1], [Cache the SII images to improve ]
+        [slave re-scan performance in operational state.])
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
+
+#------------------------------------------------------------------------------
+# Quick OP
+#------------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether to allow quick OP])
+
+AC_ARG_ENABLE([quick-op],
+    AS_HELP_STRING([--disable-quick-op],
+                   [Disable quick return to OP]),
+    [
+        case "${enableval}" in
+            yes) quickop=1
+                ;;
+            no) quickop=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-quick-op])
+                ;;
+        esac
+    ],
+    [quickop=1]
+)
+
+if test "x${quickop}" = "x1"; then
+    AC_DEFINE([EC_QUICK_OP], [1], [Allow quick return to OP ]
+        [from SAFEOP+PD_watchdog.])
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
+
+#------------------------------------------------------------------------------
+# Alternate SII firmware loading
+#------------------------------------------------------------------------------
+
+AC_MSG_CHECKING([whether to load SII locally if available])
+
+AC_ARG_ENABLE([sii-override],
+    AS_HELP_STRING([--enable-sii-override],
+                   [Enable SII override (default: no)
+--enable-sii-override=/lib/firmware to load directly]),
+    [
+        case "${enableval}" in
+            yes) siioverride=1
+                siidir=""
+                ;;
+            no) siioverride=0
+                siidir=""
+                ;;
+            */) AC_MSG_ERROR([Must omit trailing slash in --enable-sii-override.])
+                ;;
+            *) siioverride=1
+               siidir="${enableval}"
+                ;;
+        esac
+    ],
+    [siioverride=0]
+    [siidir=""]
+)
+
+if test "x${siioverride}" = "x1"; then
+    AC_DEFINE([EC_SII_OVERRIDE], [1], [Allow locally loadable SII])
+    if test "x${siidir}" = "x"; then
+        AC_MSG_RESULT([yes, from hotplug])
+    else
+        AC_MSG_RESULT([yes, from $siidir])
+        AC_DEFINE_UNQUOTED([EC_SII_DIR], ["$siidir"], [Direct SII firmware base path])
+    fi
+else
+    AC_MSG_RESULT([no])
+fi
+
+#------------------------------------------------------------------------------
 # syslog output in realtime context
 #------------------------------------------------------------------------------
 
@@ -1084,33 +1396,33 @@ else
 fi
 
 #------------------------------------------------------------------------------
-# systemd service support
+# use loop control registers to open slave ports
 #------------------------------------------------------------------------------
 
-AC_ARG_WITH([systemdsystemunitdir],
-    AS_HELP_STRING([--with-systemdsystemunitdir=DIR],
-                   [Directory for systemd service files]),
-    ,
-    [with_systemdsystemunitdir=auto]
+AC_MSG_CHECKING([whether to use loop control registers])
+
+AC_ARG_ENABLE([loop-control],
+    AS_HELP_STRING([--enable-loop-control],
+                   [Use loop control registers (default: no)]),
+    [
+        case "${enableval}" in
+            yes) loopctl=1
+                ;;
+            no) loopctl=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-loop-control])
+                ;;
+        esac
+    ],
+    [loopctl=0]
 )
 
-case "${with_systemdsystemunitdir}" in
-    yes)
-        with_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
-        if test "x$with_systemdsystemunitdir" = "x"; then
-            AC_MSG_ERROR([systemd support requested but pkg-config unable to query systemd package])
-        fi
-        ;;
-    no)
-        with_systemdsystemunitdir=
-        ;;
-    auto)
-        with_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
-        ;;
-esac
-
-AM_CONDITIONAL(HAVE_SYSTEMD, test "x$with_systemdsystemunitdir" != "x")
-AC_SUBST(systemdsystemunitdir,[$with_systemdsystemunitdir])
+if test "x${loopctl}" = "x1"; then
+    AC_DEFINE([EC_LOOP_CONTROL], [1], [Use loop control registers])
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
 
 #------------------------------------------------------------------------------
 
@@ -1122,6 +1434,8 @@ AC_CONFIG_FILES([
         devices/Makefile
         devices/ccat/Kbuild
         devices/ccat/Makefile
+        devices/cx2100/Kbuild
+        devices/cx2100/Makefile
         devices/e1000/Kbuild
         devices/e1000/Makefile
         devices/e1000e/Kbuild
@@ -1147,7 +1461,7 @@ AC_CONFIG_FILES([
         examples/xenomai_posix/Makefile
         include/Makefile
         lib/Makefile
-        lib/libethercat.pc
+        m4/Makefile
         master/Kbuild
         master/Makefile
         script/Makefile
@@ -1157,10 +1471,10 @@ AC_CONFIG_FILES([
         script/init.d/ethercat
         script/sysconfig/Makefile
         tool/Makefile
+        mailbox_gateway/Makefile
         tty/Kbuild
         tty/Makefile
 ])
 AC_OUTPUT
-
 
 #------------------------------------------------------------------------------

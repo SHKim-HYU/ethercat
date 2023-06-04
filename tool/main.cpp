@@ -41,18 +41,27 @@ using namespace std;
 #include "CommandCStruct.h"
 #include "CommandData.h"
 #include "CommandDebug.h"
+#include "CommandDiag.h"
 #include "CommandDomains.h"
 #include "CommandDownload.h"
 #ifdef EC_EOE
-# include "CommandEoe.h"
+#include "CommandEoe.h"
+#include "CommandEoeAddIf.h"
+#include "CommandEoeDelIf.h"
 #endif
 #include "CommandFoeRead.h"
 #include "CommandFoeWrite.h"
 #include "CommandGraph.h"
+#ifdef EC_EOE
+# include "CommandIp.h"
+#endif
 #include "CommandMaster.h"
+#include "CommandPcap.h"
 #include "CommandPdos.h"
 #include "CommandRegRead.h"
 #include "CommandRegWrite.h"
+#include "CommandRegReadWrite.h"
+#include "CommandReboot.h"
 #include "CommandRescan.h"
 #include "CommandSdos.h"
 #include "CommandSiiRead.h"
@@ -86,6 +95,7 @@ Command::Verbosity verbosity = Command::Normal;
 bool force = false;
 bool emergency = false;
 bool helpRequested = false;
+bool reset = false;
 string outputFile;
 string skin;
 
@@ -153,6 +163,7 @@ void getOptions(int argc, char **argv)
         {"skin",        required_argument, NULL, 's'},
         {"emergency",   no_argument,       NULL, 'e'},
         {"force",       no_argument,       NULL, 'f'},
+        {"reset",       no_argument,       NULL, 'r'},
         {"quiet",       no_argument,       NULL, 'q'},
         {"verbose",     no_argument,       NULL, 'v'},
         {"help",        no_argument,       NULL, 'h'},
@@ -160,7 +171,7 @@ void getOptions(int argc, char **argv)
     };
 
     do {
-        c = getopt_long(argc, argv, "m:a:p:d:t:o:s:efqvh", longOptions, NULL);
+        c = getopt_long(argc, argv, "m:a:p:d:t:o:s:efrqvh", longOptions, NULL);
 
         switch (c) {
             case 'm':
@@ -197,6 +208,10 @@ void getOptions(int argc, char **argv)
 
             case 'f':
                 force = true;
+                break;
+
+            case 'r':
+                reset = true;
                 break;
 
             case 'q':
@@ -246,18 +261,28 @@ list<Command *> getMatchingCommands(const string &cmdStr)
     CommandList::iterator ci;
     list<Command *> res;
 
-    // find matching commands from beginning of the string
+    // see if there's an exact match
     for (ci = commandList.begin(); ci != commandList.end(); ci++) {
-        if ((*ci)->matchesSubstr(cmdStr)) {
+        if ((*ci)->matches(cmdStr)) {
             res.push_back(*ci);
+            break;
         }
     }
-
+    
     if (!res.size()) { // nothing found
-        // find /any/ matching commands
+        // find matching commands from beginning of the string
         for (ci = commandList.begin(); ci != commandList.end(); ci++) {
-            if ((*ci)->matchesAbbrev(cmdStr)) {
+            if ((*ci)->matchesSubstr(cmdStr)) {
                 res.push_back(*ci);
+            }
+        }
+        
+        if (!res.size()) { // nothing found
+            // find /any/ matching commands
+            for (ci = commandList.begin(); ci != commandList.end(); ci++) {
+                if ((*ci)->matchesAbbrev(cmdStr)) {
+                    res.push_back(*ci);
+                }
             }
         }
     }
@@ -282,18 +307,27 @@ int main(int argc, char **argv)
     commandList.push_back(new CommandCStruct());
     commandList.push_back(new CommandData());
     commandList.push_back(new CommandDebug());
+    commandList.push_back(new CommandDiag());
     commandList.push_back(new CommandDomains());
     commandList.push_back(new CommandDownload());
 #ifdef EC_EOE
     commandList.push_back(new CommandEoe());
+    commandList.push_back(new CommandEoeAddIf());
+    commandList.push_back(new CommandEoeDelIf());
 #endif
     commandList.push_back(new CommandFoeRead());
     commandList.push_back(new CommandFoeWrite());
     commandList.push_back(new CommandGraph());
+#ifdef EC_EOE
+    commandList.push_back(new CommandIp());
+#endif
     commandList.push_back(new CommandMaster());
+    commandList.push_back(new CommandPcap());
     commandList.push_back(new CommandPdos());
     commandList.push_back(new CommandRegRead());
     commandList.push_back(new CommandRegWrite());
+    commandList.push_back(new CommandRegReadWrite());
+    commandList.push_back(new CommandReboot());
     commandList.push_back(new CommandRescan());
     commandList.push_back(new CommandSdos());
     commandList.push_back(new CommandSiiRead());
@@ -325,6 +359,7 @@ int main(int argc, char **argv)
                     cmd->setSkin(skin);
                     cmd->setEmergency(emergency);
                     cmd->setForce(force);
+                    cmd->setReset(reset);
                     cmd->execute(commandArgs);
                 } catch (InvalidUsageException &e) {
                     cerr << e.what() << endl << endl;

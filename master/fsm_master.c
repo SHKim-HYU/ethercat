@@ -48,24 +48,31 @@
 
 /** Time difference [ns] to tolerate without setting a new system time offset.
  */
-#define EC_SYSTEM_TIME_TOLERANCE_NS 1000000
+#define EC_SYSTEM_TIME_TOLERANCE_NS 1000
 
 /*****************************************************************************/
 
 void ec_fsm_master_state_start(ec_fsm_master_t *);
 void ec_fsm_master_state_broadcast(ec_fsm_master_t *);
-void ec_fsm_master_state_read_state(ec_fsm_master_t *);
-void ec_fsm_master_state_acknowledge(ec_fsm_master_t *);
-void ec_fsm_master_state_configure_slave(ec_fsm_master_t *);
+void ec_fsm_master_state_read_al_status(ec_fsm_master_t *);
+#ifdef EC_LOOP_CONTROL
+void ec_fsm_master_state_read_dl_status(ec_fsm_master_t *);
+void ec_fsm_master_state_open_port(ec_fsm_master_t *);
+#endif
+void ec_fsm_master_state_dc_read_old_times(ec_fsm_master_t *);
 void ec_fsm_master_state_clear_addresses(ec_fsm_master_t *);
+#ifdef EC_LOOP_CONTROL
+void ec_fsm_master_state_loop_control(ec_fsm_master_t *);
+#endif
 void ec_fsm_master_state_dc_measure_delays(ec_fsm_master_t *);
 void ec_fsm_master_state_scan_slave(ec_fsm_master_t *);
 void ec_fsm_master_state_dc_read_offset(ec_fsm_master_t *);
 void ec_fsm_master_state_dc_write_offset(ec_fsm_master_t *);
+void ec_fsm_master_state_dc_reset_filter(ec_fsm_master_t *);
 void ec_fsm_master_state_write_sii(ec_fsm_master_t *);
-void ec_fsm_master_state_sdo_dictionary(ec_fsm_master_t *);
-void ec_fsm_master_state_sdo_request(ec_fsm_master_t *);
+void ec_fsm_master_state_reboot_slave(ec_fsm_master_t *);
 
+void ec_fsm_master_enter_dc_read_old_times(ec_fsm_master_t *);
 void ec_fsm_master_enter_clear_addresses(ec_fsm_master_t *);
 void ec_fsm_master_enter_write_system_times(ec_fsm_master_t *);
 
@@ -85,15 +92,8 @@ void ec_fsm_master_init(
     ec_fsm_master_reset(fsm);
 
     // init sub-state-machines
-    ec_fsm_coe_init(&fsm->fsm_coe);
-    ec_fsm_soe_init(&fsm->fsm_soe);
-    ec_fsm_pdo_init(&fsm->fsm_pdo, &fsm->fsm_coe);
-    ec_fsm_change_init(&fsm->fsm_change, fsm->datagram);
-    ec_fsm_slave_config_init(&fsm->fsm_slave_config, fsm->datagram,
-            &fsm->fsm_change, &fsm->fsm_coe, &fsm->fsm_soe, &fsm->fsm_pdo);
-    ec_fsm_slave_scan_init(&fsm->fsm_slave_scan, fsm->datagram,
-            &fsm->fsm_slave_config, &fsm->fsm_pdo);
-    ec_fsm_sii_init(&fsm->fsm_sii, fsm->datagram);
+    ec_fsm_reboot_init(&fsm->fsm_reboot, fsm->datagram);
+    ec_fsm_sii_init(&fsm->fsm_sii);
 }
 
 /*****************************************************************************/
@@ -105,12 +105,7 @@ void ec_fsm_master_clear(
         )
 {
     // clear sub-state machines
-    ec_fsm_coe_clear(&fsm->fsm_coe);
-    ec_fsm_soe_clear(&fsm->fsm_soe);
-    ec_fsm_pdo_clear(&fsm->fsm_pdo);
-    ec_fsm_change_clear(&fsm->fsm_change);
-    ec_fsm_slave_config_clear(&fsm->fsm_slave_config);
-    ec_fsm_slave_scan_clear(&fsm->fsm_slave_scan);
+    ec_fsm_reboot_clear(&fsm->fsm_reboot);
     ec_fsm_sii_clear(&fsm->fsm_sii);
 }
 
@@ -239,10 +234,23 @@ void ec_fsm_master_state_start(
         return;
     }
 
+    // check for detached config requests
+    ec_master_expire_slave_config_requests(fsm->master);
+
+    if (master->reboot) {
+        // A reboot of all slaves was requested
+        master->reboot = 0;
+        fsm->idle = 0;
+        fsm->state = ec_fsm_master_state_reboot_slave;
+        fsm->slave = NULL;
+        ec_fsm_reboot_all(&fsm->fsm_reboot, master);
+        fsm->state(fsm); // execute immediately
+        return;
+    }
+
     ec_datagram_brd(fsm->datagram, 0x0130, 2);
     ec_datagram_zero(fsm->datagram);
     fsm->datagram->device_index = fsm->dev_idx;
-    fsm->retries = EC_FSM_RETRIES;
     fsm->state = ec_fsm_master_state_broadcast;
 }
 
@@ -261,10 +269,6 @@ void ec_fsm_master_state_broadcast(
     ec_slave_t *slave;
     ec_master_t *master = fsm->master;
 
-    if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--) {
-        return;
-    }
-
     // bus topology change?
     if (datagram->working_counter != fsm->slaves_responding[fsm->dev_idx]) {
         fsm->rescan_required = 1;
@@ -282,11 +286,17 @@ void ec_fsm_master_state_broadcast(
                 "link down on %s device. Clearing slave list.\n",
                 ec_device_names[fsm->dev_idx != 0]);
 
+        ec_master_slaves_not_available(master);
 #ifdef EC_EOE
         ec_master_eoe_stop(master);
-        ec_master_clear_eoe_handlers(master);
+        ec_master_clear_eoe_handlers(master, 0);
 #endif
         ec_master_clear_slaves(master);
+        ec_master_clear_sii_images(master);
+
+        ec_lock_down(&master->config_sem);
+        master->config_busy = 0;
+        ec_lock_up(&master->config_sem);
 
         for (dev_idx = EC_DEVICE_MAIN;
                 dev_idx < ec_master_num_devices(master); dev_idx++) {
@@ -321,26 +331,32 @@ void ec_fsm_master_state_broadcast(
     }
 
     if (fsm->rescan_required) {
-        down(&master->scan_sem);
+        ec_lock_down(&master->scan_sem);
         if (!master->allow_scan) {
-            up(&master->scan_sem);
+            ec_lock_up(&master->scan_sem);
         } else {
             unsigned int count = 0, next_dev_slave, ring_position;
             ec_device_index_t dev_idx;
 
             master->scan_busy = 1;
-            up(&master->scan_sem);
+            ec_lock_up(&master->scan_sem);
 
             // clear all slaves and scan the bus
             fsm->rescan_required = 0;
             fsm->idle = 0;
             fsm->scan_jiffies = jiffies;
 
+            ec_master_slaves_not_available(master);
 #ifdef EC_EOE
             ec_master_eoe_stop(master);
-            ec_master_clear_eoe_handlers(master);
+            ec_master_clear_eoe_handlers(master, 0);
 #endif
             ec_master_clear_slaves(master);
+            ec_master_clear_sii_images(master);
+
+            ec_lock_down(&master->config_sem);
+            master->config_busy = 0;
+            ec_lock_up(&master->config_sem);
 
             for (dev_idx = EC_DEVICE_MAIN;
                     dev_idx < ec_master_num_devices(master); dev_idx++) {
@@ -389,14 +405,8 @@ void ec_fsm_master_state_broadcast(
             master->slave_count = count;
             master->fsm_slave = master->slaves;
 
-            /* start with first device with slaves responding; at least one
-             * has responding slaves, otherwise count would be zero. */
-            fsm->dev_idx = EC_DEVICE_MAIN;
-            while (!fsm->slaves_responding[fsm->dev_idx]) {
-                fsm->dev_idx++;
-            }
-
-            ec_fsm_master_enter_clear_addresses(fsm);
+            ec_master_slaves_available(master);
+            ec_fsm_master_enter_dc_read_old_times(fsm);
             return;
         }
     }
@@ -406,6 +416,7 @@ void ec_fsm_master_state_broadcast(
         // application applied configurations
         if (master->config_changed) {
             master->config_changed = 0;
+            master->dc_offset_valid = 0;
 
             EC_MASTER_DBG(master, 1, "Configuration changed.\n");
 
@@ -420,7 +431,7 @@ void ec_fsm_master_state_broadcast(
             ec_datagram_zero(datagram);
             fsm->datagram->device_index = fsm->slave->device_index;
             fsm->retries = EC_FSM_RETRIES;
-            fsm->state = ec_fsm_master_state_read_state;
+            fsm->state = ec_fsm_master_state_read_al_status;
         }
     } else {
         ec_fsm_master_restart(fsm);
@@ -467,60 +478,6 @@ int ec_fsm_master_action_process_sii(
 
 /*****************************************************************************/
 
-/** Check for pending SDO requests and process one.
- *
- * \return non-zero, if an SDO request is processed.
- */
-int ec_fsm_master_action_process_sdo(
-        ec_fsm_master_t *fsm /**< Master state machine. */
-        )
-{
-    ec_master_t *master = fsm->master;
-    ec_slave_t *slave;
-    ec_sdo_request_t *req;
-
-    // search for internal requests to be processed
-    for (slave = master->slaves;
-            slave < master->slaves + master->slave_count;
-            slave++) {
-
-        if (!slave->config) {
-            continue;
-        }
-
-        list_for_each_entry(req, &slave->config->sdo_requests, list) {
-            if (req->state == EC_INT_REQUEST_QUEUED) {
-
-                if (ec_sdo_request_timed_out(req)) {
-                    req->state = EC_INT_REQUEST_FAILURE;
-                    EC_SLAVE_DBG(slave, 1, "Internal SDO request"
-                            " timed out.\n");
-                    continue;
-                }
-
-                if (slave->current_state == EC_SLAVE_STATE_INIT) {
-                    req->state = EC_INT_REQUEST_FAILURE;
-                    continue;
-                }
-
-                req->state = EC_INT_REQUEST_BUSY;
-                EC_SLAVE_DBG(slave, 1, "Processing internal"
-                        " SDO request...\n");
-                fsm->idle = 0;
-                fsm->sdo_request = req;
-                fsm->slave = slave;
-                fsm->state = ec_fsm_master_state_sdo_request;
-                ec_fsm_coe_transfer(&fsm->fsm_coe, slave, req);
-                ec_fsm_coe_exec(&fsm->fsm_coe, fsm->datagram);
-                return 1;
-            }
-        }
-    }
-    return 0;
-}
-
-/*****************************************************************************/
-
 /** Master action: IDLE.
  *
  * Does secondary work.
@@ -529,52 +486,10 @@ void ec_fsm_master_action_idle(
         ec_fsm_master_t *fsm /**< Master state machine. */
         )
 {
-    ec_master_t *master = fsm->master;
-    ec_slave_t *slave;
-
-    // Check for pending internal SDO requests
-    if (ec_fsm_master_action_process_sdo(fsm)) {
-        return;
-    }
-
-    // enable processing of requests
-    for (slave = master->slaves;
-            slave < master->slaves + master->slave_count;
-            slave++) {
-        ec_fsm_slave_set_ready(&slave->fsm);
-    }
-
-    // check, if slaves have an SDO dictionary to read out.
-    for (slave = master->slaves;
-            slave < master->slaves + master->slave_count;
-            slave++) {
-        if (!(slave->sii.mailbox_protocols & EC_MBOX_COE)
-                || (slave->sii.has_general
-                    && !slave->sii.coe_details.enable_sdo_info)
-                || slave->sdo_dictionary_fetched
-                || slave->current_state == EC_SLAVE_STATE_INIT
-                || slave->current_state == EC_SLAVE_STATE_UNKNOWN
-                || jiffies - slave->jiffies_preop < EC_WAIT_SDO_DICT * HZ
-                ) continue;
-
-        EC_SLAVE_DBG(slave, 1, "Fetching SDO dictionary.\n");
-
-        slave->sdo_dictionary_fetched = 1;
-
-        // start fetching SDO dictionary
-        fsm->idle = 0;
-        fsm->slave = slave;
-        fsm->state = ec_fsm_master_state_sdo_dictionary;
-        ec_fsm_coe_dictionary(&fsm->fsm_coe, slave);
-        ec_fsm_coe_exec(&fsm->fsm_coe, fsm->datagram); // execute immediately
-        fsm->datagram->device_index = fsm->slave->device_index;
-        return;
-    }
-
     // check for pending SII write operations.
     if (ec_fsm_master_action_process_sii(fsm)) {
         return; // SII write request found
-	}
+    }
 
     ec_fsm_master_restart(fsm);
 }
@@ -599,13 +514,158 @@ void ec_fsm_master_action_next_slave_state(
         ec_datagram_zero(fsm->datagram);
         fsm->datagram->device_index = fsm->slave->device_index;
         fsm->retries = EC_FSM_RETRIES;
-        fsm->state = ec_fsm_master_state_read_state;
+        fsm->state = ec_fsm_master_state_read_al_status;
         return;
     }
 
     // all slaves processed
     ec_fsm_master_action_idle(fsm);
 }
+
+/*****************************************************************************/
+
+#ifdef EC_LOOP_CONTROL
+
+/** Master action: Read DL status of current slave.
+ */
+void ec_fsm_master_action_read_dl_status(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    ec_datagram_fprd(fsm->datagram, fsm->slave->station_address, 0x0110, 2);
+    ec_datagram_zero(fsm->datagram);
+    fsm->datagram->device_index = fsm->slave->device_index;
+    fsm->retries = EC_FSM_RETRIES;
+    fsm->state = ec_fsm_master_state_read_dl_status;
+}
+
+/*****************************************************************************/
+
+/** Master action: Open slave port.
+ */
+void ec_fsm_master_action_open_port(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    EC_SLAVE_INFO(fsm->slave, "Opening ports.\n");
+
+    ec_datagram_fpwr(fsm->datagram, fsm->slave->station_address, 0x0101, 1);
+    EC_WRITE_U8(fsm->datagram->data, 0x54); // port 0 auto, 1-3 auto-close
+    fsm->datagram->device_index = fsm->slave->device_index;
+    fsm->retries = EC_FSM_RETRIES;
+    fsm->state = ec_fsm_master_state_open_port;
+}
+
+/*****************************************************************************/
+
+/** Master state: READ DL STATUS.
+ *
+ * Fetches the DL state of a slave.
+ */
+void ec_fsm_master_state_read_dl_status(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    ec_slave_t *slave = fsm->slave;
+    ec_datagram_t *datagram = fsm->datagram;
+    unsigned int i;
+
+    if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--) {
+        return;
+    }
+
+    if (datagram->state != EC_DATAGRAM_RECEIVED) {
+        EC_SLAVE_ERR(slave, "Failed to receive AL state datagram: ");
+        ec_datagram_print_state(datagram);
+        ec_fsm_master_restart(fsm);
+        return;
+    }
+
+    // did the slave not respond to its station address?
+    if (datagram->working_counter != 1) {
+        // try again next time
+        ec_fsm_master_action_next_slave_state(fsm);
+        return;
+    }
+
+    ec_slave_set_dl_status(slave, EC_READ_U16(datagram->data));
+
+    // process port state machines
+    for (i = 0; i < EC_MAX_PORTS; i++) {
+        ec_slave_port_t *port = &slave->ports[i];
+
+        switch (port->state) {
+            case EC_SLAVE_PORT_DOWN:
+                if (port->link.loop_closed) {
+                    if (port->link.link_up) {
+                        port->link_detection_jiffies = jiffies;
+                        port->state = EC_SLAVE_PORT_WAIT;
+                    }
+                }
+                else { // loop open
+                    port->state = EC_SLAVE_PORT_UP;
+                }
+                break;
+            case EC_SLAVE_PORT_WAIT:
+                if (port->link.link_up) {
+                    if (jiffies - port->link_detection_jiffies >
+                            HZ * EC_PORT_WAIT_MS / 1000) {
+                        port->state = EC_SLAVE_PORT_UP;
+                        ec_fsm_master_action_open_port(fsm);
+                        return;
+                    }
+                }
+                else { // link down
+                    port->state = EC_SLAVE_PORT_DOWN;
+                }
+                break;
+            default: // EC_SLAVE_PORT_UP
+                if (!port->link.link_up) {
+                    port->state = EC_SLAVE_PORT_DOWN;
+                }
+                break;
+        }
+    }
+
+    // process next slave
+    ec_fsm_master_action_next_slave_state(fsm);
+}
+
+/*****************************************************************************/
+
+/** Master state: OPEN_PORT.
+ *
+ * Opens slave ports.
+ */
+void ec_fsm_master_state_open_port(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    ec_slave_t *slave = fsm->slave;
+    ec_datagram_t *datagram = fsm->datagram;
+
+    if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--) {
+        return;
+    }
+
+    if (datagram->state != EC_DATAGRAM_RECEIVED) {
+        EC_SLAVE_ERR(slave, "Failed to receive port open datagram: ");
+        ec_datagram_print_state(datagram);
+        ec_fsm_master_restart(fsm);
+        return;
+    }
+
+    // did the slave not respond to its station address?
+    if (datagram->working_counter != 1) {
+        EC_SLAVE_ERR(slave, "Did not respond to port open command!\n");
+        return;
+    }
+
+    // process next slave
+    ec_fsm_master_action_next_slave_state(fsm);
+}
+
+#endif
 
 /*****************************************************************************/
 
@@ -616,10 +676,10 @@ void ec_fsm_master_action_configure(
         )
 {
     ec_master_t *master = fsm->master;
-    ec_slave_t *slave = fsm->slave;
 
     if (master->config_changed) {
         master->config_changed = 0;
+        master->dc_offset_valid = 0;
 
         // abort iterating through slaves,
         // first compensate DC system time offsets,
@@ -632,44 +692,25 @@ void ec_fsm_master_action_configure(
         return;
     }
 
-    // Does the slave have to be configured?
-    if ((slave->current_state != slave->requested_state
-                || slave->force_config) && !slave->error_flag) {
+    // allow slave to start config (if not already done).
+    ec_fsm_slave_set_ready(&fsm->slave->fsm);
 
-        // Start slave configuration
-        down(&master->config_sem);
-        master->config_busy = 1;
-        up(&master->config_sem);
-
-        if (master->debug_level) {
-            char old_state[EC_STATE_STRING_SIZE],
-                 new_state[EC_STATE_STRING_SIZE];
-            ec_state_string(slave->current_state, old_state, 0);
-            ec_state_string(slave->requested_state, new_state, 0);
-            EC_SLAVE_DBG(slave, 1, "Changing state from %s to %s%s.\n",
-                    old_state, new_state,
-                    slave->force_config ? " (forced)" : "");
-        }
-
-        fsm->idle = 0;
-        fsm->state = ec_fsm_master_state_configure_slave;
-        ec_fsm_slave_config_start(&fsm->fsm_slave_config, slave);
-        fsm->state(fsm); // execute immediately
-        fsm->datagram->device_index = fsm->slave->device_index;
-        return;
-    }
-
+#ifdef EC_LOOP_CONTROL
+    // read DL status
+    ec_fsm_master_action_read_dl_status(fsm);
+#else
     // process next slave
     ec_fsm_master_action_next_slave_state(fsm);
+#endif
 }
 
 /*****************************************************************************/
 
-/** Master state: READ STATE.
+/** Master state: READ AL STATUS.
  *
  * Fetches the AL state of a slave.
  */
-void ec_fsm_master_state_read_state(
+void ec_fsm_master_state_read_al_status(
         ec_fsm_master_t *fsm /**< Master state machine. */
         )
 {
@@ -699,47 +740,127 @@ void ec_fsm_master_state_read_state(
     }
 
     // A single slave responded
-    ec_slave_set_state(slave, EC_READ_U8(datagram->data));
+    ec_slave_set_al_status(slave, EC_READ_U8(datagram->data));
+
+    if (slave->reboot) {
+        // A reboot of this slave was requested
+        slave->reboot = 0;
+        fsm->idle = 0;
+        fsm->state = ec_fsm_master_state_reboot_slave;
+        ec_fsm_reboot_single(&fsm->fsm_reboot, slave);
+        fsm->state(fsm); // execute immediately
+        return;
+    }
 
     if (!slave->error_flag) {
-        // Check, if new slave state has to be acknowledged
-        if (slave->current_state & EC_SLAVE_STATE_ACK_ERR) {
-            fsm->idle = 0;
-            fsm->state = ec_fsm_master_state_acknowledge;
-            ec_fsm_change_ack(&fsm->fsm_change, slave);
-            fsm->state(fsm); // execute immediately
-            return;
-        }
-
-        // No acknowlegde necessary; check for configuration
+        // Check for configuration
         ec_fsm_master_action_configure(fsm);
         return;
     }
 
-    // slave has error flag set; process next one
+#ifdef EC_LOOP_CONTROL
+    // read DL status
+    ec_fsm_master_action_read_dl_status(fsm);
+#else
+    // process next slave
     ec_fsm_master_action_next_slave_state(fsm);
+#endif
 }
 
 /*****************************************************************************/
 
-/** Master state: ACKNOWLEDGE.
+/** Master state: REBOOT SLAVE.
  */
-void ec_fsm_master_state_acknowledge(
+void ec_fsm_master_state_reboot_slave(
         ec_fsm_master_t *fsm /**< Master state machine. */
         )
 {
     ec_slave_t *slave = fsm->slave;
 
-    if (ec_fsm_change_exec(&fsm->fsm_change)) {
+    if (ec_fsm_reboot_exec(&fsm->fsm_reboot)) {
         return;
     }
 
-    if (!ec_fsm_change_success(&fsm->fsm_change)) {
-        fsm->slave->error_flag = 1;
-        EC_SLAVE_ERR(slave, "Failed to acknowledge state change.\n");
+    if (!ec_fsm_reboot_success(&fsm->fsm_reboot)) {
+        if (slave) {
+            EC_SLAVE_ERR(slave, "Failed to reboot.\n");
+        } else {
+            EC_MASTER_ERR(fsm->master, "Failed to reboot.\n");
+        }
     }
 
-    ec_fsm_master_action_configure(fsm);
+    ec_fsm_master_restart(fsm);
+}
+
+/*****************************************************************************/
+
+/** Start reading old timestamps from slaves.
+ */
+void ec_fsm_master_enter_dc_read_old_times(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    EC_MASTER_DBG(fsm->master, 1, "Reading old port receive times...\n");
+
+    // read DC port receive times
+    // (station addresses not assigned yet, so must APRD.)
+    fsm->slave = fsm->master->slaves;
+    ec_datagram_aprd(fsm->datagram, fsm->slave->ring_position, 0x0900, 16);
+    ec_datagram_zero(fsm->datagram);
+    fsm->datagram->device_index = fsm->slave->device_index;
+    fsm->retries = EC_FSM_RETRIES;
+    fsm->state = ec_fsm_master_state_dc_read_old_times;
+}
+
+/*****************************************************************************/
+
+/** Master state: DC READ OLD TIMES.
+ */
+void ec_fsm_master_state_dc_read_old_times(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    ec_master_t *master = fsm->master;
+    ec_slave_t *slave = fsm->slave;
+    ec_datagram_t *datagram = fsm->datagram;
+    int i;
+
+    if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--)
+        return;
+
+    if (datagram->state != EC_DATAGRAM_RECEIVED) {
+        EC_SLAVE_ERR(slave, "Failed to receive DC receive times datagram: ");
+        ec_datagram_print_state(datagram);
+        // continue even on error
+    } else if (datagram->working_counter != 1) {
+        EC_SLAVE_WARN(slave, "Failed to get DC receive times: ");
+        ec_datagram_print_wc_error(datagram);
+        // continue; this is just a warning because at this point we
+        // don't know if the slave supports these registers or not
+    }
+
+    for (i = 0; i < EC_MAX_PORTS; i++) {
+        slave->ports[i].receive_time = EC_READ_U32(datagram->data + 4 * i);
+    }
+
+    ++fsm->slave;
+    if (fsm->slave < master->slaves + master->slave_count) {
+        // read DC port receive times
+        ec_datagram_aprd(datagram, fsm->slave->ring_position, 0x0900, 16);
+        ec_datagram_zero(datagram);
+        datagram->device_index = fsm->slave->device_index;
+        fsm->retries = EC_FSM_RETRIES;
+    } else {
+        /* start with first device with slaves responding; at least one
+         * has responding slaves, otherwise count would be zero. */
+        fsm->dev_idx = EC_DEVICE_MAIN;
+        while (!fsm->slaves_responding[fsm->dev_idx]) {
+            fsm->dev_idx++;
+        }
+
+        fsm->slave = master->slaves;
+        ec_fsm_master_enter_clear_addresses(fsm);
+    }
 }
 
 /*****************************************************************************/
@@ -757,6 +878,73 @@ void ec_fsm_master_enter_clear_addresses(
     fsm->retries = EC_FSM_RETRIES;
     fsm->state = ec_fsm_master_state_clear_addresses;
 }
+
+/*****************************************************************************/
+
+/** Start measuring DC delays.
+ */
+void ec_fsm_master_enter_dc_measure_delays(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    EC_MASTER_DBG(fsm->master, 1, "Sending broadcast-write"
+            " to measure transmission delays on %s link.\n",
+            ec_device_names[fsm->dev_idx != 0]);
+
+    ec_datagram_bwr(fsm->datagram, 0x0900, 1);
+    ec_datagram_zero(fsm->datagram);
+    fsm->datagram->device_index = fsm->dev_idx;
+    fsm->retries = EC_FSM_RETRIES;
+    fsm->state = ec_fsm_master_state_dc_measure_delays;
+}
+
+/*****************************************************************************/
+
+#ifdef EC_LOOP_CONTROL
+
+/** Start writing loop control registers.
+ */
+void ec_fsm_master_enter_loop_control(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    EC_MASTER_DBG(fsm->master, 1, "Broadcast-writing"
+            " loop control registers on %s link.\n",
+            ec_device_names[fsm->dev_idx != 0]);
+
+    ec_datagram_bwr(fsm->datagram, 0x0101, 1);
+    EC_WRITE_U8(fsm->datagram->data, 0x54); // port 0 auto, 1-3 auto-close
+    fsm->datagram->device_index = fsm->dev_idx;
+    fsm->retries = EC_FSM_RETRIES;
+    fsm->state = ec_fsm_master_state_loop_control;
+}
+
+/*****************************************************************************/
+
+/** Master state: LOOP CONTROL.
+ */
+void ec_fsm_master_state_loop_control(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    ec_master_t *master = fsm->master;
+    ec_datagram_t *datagram = fsm->datagram;
+
+    if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--) {
+        return;
+    }
+
+    if (datagram->state != EC_DATAGRAM_RECEIVED) {
+        EC_MASTER_ERR(master, "Failed to receive loop control"
+                " datagram on %s link: ",
+                ec_device_names[fsm->dev_idx != 0]);
+        ec_datagram_print_state(datagram);
+    }
+
+    ec_fsm_master_enter_dc_measure_delays(fsm);
+}
+
+#endif
 
 /*****************************************************************************/
 
@@ -791,15 +979,11 @@ void ec_fsm_master_state_clear_addresses(
                 fsm->slaves_responding[fsm->dev_idx]);
     }
 
-    EC_MASTER_DBG(master, 1, "Sending broadcast-write"
-            " to measure transmission delays on %s link.\n",
-            ec_device_names[fsm->dev_idx != 0]);
-
-    ec_datagram_bwr(datagram, 0x0900, 1);
-    ec_datagram_zero(datagram);
-    fsm->datagram->device_index = fsm->dev_idx;
-    fsm->retries = EC_FSM_RETRIES;
-    fsm->state = ec_fsm_master_state_dc_measure_delays;
+#ifdef EC_LOOP_CONTROL
+    ec_fsm_master_enter_loop_control(fsm);
+#else
+    ec_fsm_master_enter_dc_measure_delays(fsm);
+#endif
 }
 
 /*****************************************************************************/
@@ -812,6 +996,7 @@ void ec_fsm_master_state_dc_measure_delays(
 {
     ec_master_t *master = fsm->master;
     ec_datagram_t *datagram = fsm->datagram;
+    ec_slave_t *slave;
 
     if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--) {
         return;
@@ -842,61 +1027,38 @@ void ec_fsm_master_state_dc_measure_delays(
 
     EC_MASTER_INFO(master, "Scanning bus.\n");
 
-    // begin scanning of slaves
-    fsm->slave = master->slaves;
-    EC_MASTER_DBG(master, 1, "Scanning slave %u on %s link.\n",
-            fsm->slave->ring_position,
-            ec_device_names[fsm->slave->device_index != 0]);
+    // set slaves ready for requests (begins scan).
+    for (slave = master->slaves;
+            slave < master->slaves + master->slave_count;
+            slave++) {
+        ec_fsm_slave_set_ready(&slave->fsm);
+    }
+
     fsm->state = ec_fsm_master_state_scan_slave;
-    ec_fsm_slave_scan_start(&fsm->fsm_slave_scan, fsm->slave);
-    ec_fsm_slave_scan_exec(&fsm->fsm_slave_scan); // execute immediately
-    fsm->datagram->device_index = fsm->slave->device_index;
+    fsm->datagram->state = EC_DATAGRAM_INVALID; // nothing to send
+    fsm->state(fsm);    // execute immediately
 }
 
 /*****************************************************************************/
 
 /** Master state: SCAN SLAVE.
  *
- * Executes the sub-statemachine for the scanning of a slave.
+ * Waits until slave scanning is completed.
  */
 void ec_fsm_master_state_scan_slave(
         ec_fsm_master_t *fsm /**< Master state machine. */
         )
 {
     ec_master_t *master = fsm->master;
-#ifdef EC_EOE
-    ec_slave_t *slave = fsm->slave;
-#endif
+    ec_slave_t *slave;
 
-    if (ec_fsm_slave_scan_exec(&fsm->fsm_slave_scan)) {
-        return;
-    }
-
-#ifdef EC_EOE
-    if (slave->sii.mailbox_protocols & EC_MBOX_EOE) {
-        // create EoE handler for this slave
-        ec_eoe_t *eoe;
-        if (!(eoe = kmalloc(sizeof(ec_eoe_t), GFP_KERNEL))) {
-            EC_SLAVE_ERR(slave, "Failed to allocate EoE handler memory!\n");
-        } else if (ec_eoe_init(eoe, slave)) {
-            EC_SLAVE_ERR(slave, "Failed to init EoE handler!\n");
-            kfree(eoe);
-        } else {
-            list_add_tail(&eoe->list, &master->eoe_handlers);
+    for (slave = master->slaves;
+            slave < master->slaves + master->slave_count;
+            slave++) {
+        if (slave->scan_required && !slave->error_flag) {
+            // still in progress
+            return;
         }
-    }
-#endif
-
-    // another slave to fetch?
-    fsm->slave++;
-    if (fsm->slave < master->slaves + master->slave_count) {
-        EC_MASTER_DBG(master, 1, "Scanning slave %u on %s link.\n",
-                fsm->slave->ring_position,
-                ec_device_names[fsm->slave->device_index != 0]);
-        ec_fsm_slave_scan_start(&fsm->fsm_slave_scan, fsm->slave);
-        ec_fsm_slave_scan_exec(&fsm->fsm_slave_scan); // execute immediately
-        fsm->datagram->device_index = fsm->slave->device_index;
-        return;
     }
 
     EC_MASTER_INFO(master, "Bus scanning completed in %lu ms.\n",
@@ -905,10 +1067,13 @@ void ec_fsm_master_state_scan_slave(
     master->scan_busy = 0;
     wake_up_interruptible(&master->scan_queue);
 
-    ec_master_calc_dc(master);
-
     // Attach slave configurations
     ec_master_attach_slave_configs(master);
+
+    // Set DC ref slave and calc topology and transmission delays
+    // Note: must come after attach_slave_configs for application
+    //       selected dc_ref_config to return its slave
+    ec_master_calc_dc(master);
 
 #ifdef EC_EOE
     // check if EoE processing has to be started
@@ -917,42 +1082,13 @@ void ec_fsm_master_state_scan_slave(
 
     if (master->slave_count) {
         master->config_changed = 0;
+        master->dc_offset_valid = 0;
 
         fsm->slave = master->slaves; // begin with first slave
         ec_fsm_master_enter_write_system_times(fsm);
     } else {
         ec_fsm_master_restart(fsm);
     }
-}
-
-/*****************************************************************************/
-
-/** Master state: CONFIGURE SLAVE.
- *
- * Starts configuring a slave.
- */
-void ec_fsm_master_state_configure_slave(
-        ec_fsm_master_t *fsm /**< Master state machine. */
-        )
-{
-    ec_master_t *master = fsm->master;
-
-    if (ec_fsm_slave_config_exec(&fsm->fsm_slave_config)) {
-        return;
-    }
-
-    fsm->slave->force_config = 0;
-
-    // configuration finished
-    master->config_busy = 0;
-    wake_up_interruptible(&master->config_queue);
-
-    if (!ec_fsm_slave_config_success(&fsm->fsm_slave_config)) {
-        // TODO: mark slave_config as failed.
-    }
-
-    fsm->idle = 1;
-    ec_fsm_master_action_next_slave_state(fsm);
 }
 
 /*****************************************************************************/
@@ -965,7 +1101,7 @@ void ec_fsm_master_enter_write_system_times(
 {
     ec_master_t *master = fsm->master;
 
-    if (master->dc_ref_time) {
+    if (master->active) {
 
         while (fsm->slave < master->slaves + master->slave_count) {
             if (!fsm->slave->base_dc_supported
@@ -979,21 +1115,19 @@ void ec_fsm_master_enter_write_system_times(
             // read DC system time (0x0910, 64 bit)
             //                         gap (64 bit)
             //     and time offset (0x0920, 64 bit)
+            //   and receive delay (0x0928, 32 bit)
             ec_datagram_fprd(fsm->datagram, fsm->slave->station_address,
-                    0x0910, 24);
+                    0x0910, 28);
+            ec_datagram_zero(fsm->datagram);
             fsm->datagram->device_index = fsm->slave->device_index;
             fsm->retries = EC_FSM_RETRIES;
             fsm->state = ec_fsm_master_state_dc_read_offset;
             return;
         }
+        master->dc_offset_valid = 1;
 
     } else {
-        if (master->active) {
-            EC_MASTER_WARN(master, "No application time received up to now,"
-                    " but master already active.\n");
-        } else {
-            EC_MASTER_DBG(master, 1, "No app_time received up to now.\n");
-        }
+        EC_MASTER_DBG(master, 1, "No app_time received up to now.\n");
     }
 
     // scanning and setting system times complete
@@ -1011,26 +1145,21 @@ u64 ec_fsm_master_dc_offset32(
         ec_fsm_master_t *fsm, /**< Master state machine. */
         u64 system_time, /**< System time register. */
         u64 old_offset, /**< Time offset register. */
-        unsigned long jiffies_since_read /**< Jiffies for correction. */
+        u64 app_time_sent /**< Master app time by reading. */
         )
 {
     ec_slave_t *slave = fsm->slave;
-    u32 correction, system_time32, old_offset32, new_offset;
+    u32 system_time32, old_offset32, new_offset;
     s32 time_diff;
 
     system_time32 = (u32) system_time;
     old_offset32 = (u32) old_offset;
 
-    // correct read system time by elapsed time since read operation
-    correction = jiffies_since_read * 1000 / HZ * 1000000;
-    system_time32 += correction;
-    time_diff = (u32) slave->master->app_time - system_time32;
+    time_diff = (u32) app_time_sent - system_time32;
 
     EC_SLAVE_DBG(slave, 1, "DC 32 bit system time offset calculation:"
-            " system_time=%u (corrected with %u),"
-            " app_time=%llu, diff=%i\n",
-            system_time32, correction,
-            slave->master->app_time, time_diff);
+            " system_time=%u, app_time=%llu, diff=%i\n",
+            system_time32, app_time_sent, time_diff);
 
     if (EC_ABS(time_diff) > EC_SYSTEM_TIME_TOLERANCE_NS) {
         new_offset = time_diff + old_offset32;
@@ -1053,23 +1182,18 @@ u64 ec_fsm_master_dc_offset64(
         ec_fsm_master_t *fsm, /**< Master state machine. */
         u64 system_time, /**< System time register. */
         u64 old_offset, /**< Time offset register. */
-        unsigned long jiffies_since_read /**< Jiffies for correction. */
+        u64 app_time_sent /**< Master app time by reading. */
         )
 {
     ec_slave_t *slave = fsm->slave;
-    u64 new_offset, correction;
+    u64 new_offset;
     s64 time_diff;
 
-    // correct read system time by elapsed time since read operation
-    correction = (u64) (jiffies_since_read * 1000 / HZ) * 1000000;
-    system_time += correction;
-    time_diff = fsm->slave->master->app_time - system_time;
+    time_diff = app_time_sent - system_time;
 
     EC_SLAVE_DBG(slave, 1, "DC 64 bit system time offset calculation:"
-            " system_time=%llu (corrected with %llu),"
-            " app_time=%llu, diff=%lli\n",
-            system_time, correction,
-            slave->master->app_time, time_diff);
+            " system_time=%llu, app_time=%llu, diff=%lli\n",
+            system_time, app_time_sent, time_diff);
 
     if (EC_ABS(time_diff) > EC_SYSTEM_TIME_TOLERANCE_NS) {
         new_offset = time_diff + old_offset;
@@ -1093,8 +1217,9 @@ void ec_fsm_master_state_dc_read_offset(
 {
     ec_datagram_t *datagram = fsm->datagram;
     ec_slave_t *slave = fsm->slave;
+    ec_master_t *master = fsm->master;
     u64 system_time, old_offset, new_offset;
-    unsigned long jiffies_since_read;
+    u32 old_delay;
 
     if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--)
         return;
@@ -1115,16 +1240,42 @@ void ec_fsm_master_state_dc_read_offset(
         return;
     }
 
+    if (unlikely(!master->dc_ref_time)) {
+        EC_MASTER_WARN(master, "No app_time received up to now,"
+                    " abort DC time offset calculation.\n");
+        // scanning and setting system times complete
+        ec_master_request_op(master);
+        ec_fsm_master_restart(fsm);
+        return;
+    }
+
     system_time = EC_READ_U64(datagram->data);     // 0x0910
     old_offset = EC_READ_U64(datagram->data + 16); // 0x0920
-    jiffies_since_read = jiffies - datagram->jiffies_sent;
+    old_delay = EC_READ_U32(datagram->data + 24);  // 0x0928
 
     if (slave->base_dc_range == EC_DC_32) {
         new_offset = ec_fsm_master_dc_offset32(fsm,
-                system_time, old_offset, jiffies_since_read);
+                system_time, old_offset, datagram->app_time_sent);
     } else {
         new_offset = ec_fsm_master_dc_offset64(fsm,
-                system_time, old_offset, jiffies_since_read);
+                system_time, old_offset, datagram->app_time_sent);
+    }
+
+    if (new_offset != old_offset
+            && slave->current_state >= EC_SLAVE_STATE_SAFEOP) {
+        // Slave is already active; changing the system time offset could
+        // cause problems.  Leave the offset alone in this case and just
+        // let the normal cyclic sync process gradually adjust it to the
+        // correct time.
+        EC_SLAVE_DBG(slave, 1, "Slave is running; ignoring DC offset change.\n");
+        new_offset = old_offset;
+    }
+
+    if (new_offset == old_offset && slave->transmission_delay == old_delay) {
+        // offsets have not changed; skip write to avoid possible trouble
+        fsm->slave++;
+        ec_fsm_master_enter_write_system_times(fsm);
+        return;
     }
 
     // set DC system time offset and transmission delay
@@ -1167,6 +1318,51 @@ void ec_fsm_master_state_dc_write_offset(
         return;
     }
 
+    // reset DC filter after changing offsets
+    if (slave->current_state >= EC_SLAVE_STATE_SAFEOP) {
+        EC_SLAVE_DBG(slave, 1, "Slave is running; not resetting DC filter.\n");
+        fsm->slave++;
+        ec_fsm_master_enter_write_system_times(fsm);
+    } else {
+        ec_datagram_fpwr(datagram, slave->station_address, 0x0930, 2);
+        EC_WRITE_U16(datagram->data, 0x1000);
+        fsm->datagram->device_index = slave->device_index;
+        fsm->retries = EC_FSM_RETRIES;
+        fsm->state = ec_fsm_master_state_dc_reset_filter;
+    }
+}
+
+/*****************************************************************************/
+
+/** Master state: DC RESET FILTER.
+ */
+void ec_fsm_master_state_dc_reset_filter(
+        ec_fsm_master_t *fsm /**< Master state machine. */
+        )
+{
+    ec_datagram_t *datagram = fsm->datagram;
+    ec_slave_t *slave = fsm->slave;
+
+    if (datagram->state == EC_DATAGRAM_TIMED_OUT && fsm->retries--)
+        return;
+
+    if (datagram->state != EC_DATAGRAM_RECEIVED) {
+        EC_SLAVE_ERR(slave,
+                "Failed to receive DC reset filter datagram: ");
+        ec_datagram_print_state(datagram);
+        fsm->slave++;
+        ec_fsm_master_enter_write_system_times(fsm);
+        return;
+    }
+
+    if (datagram->working_counter != 1) {
+        EC_SLAVE_ERR(slave, "Failed to reset DC filter: ");
+        ec_datagram_print_wc_error(datagram);
+        fsm->slave++;
+        ec_fsm_master_enter_write_system_times(fsm);
+        return;
+    }
+
     fsm->slave++;
     ec_fsm_master_enter_write_system_times(fsm);
 }
@@ -1183,7 +1379,7 @@ void ec_fsm_master_state_write_sii(
     ec_sii_write_request_t *request = fsm->sii_request;
     ec_slave_t *slave = request->slave;
 
-    if (ec_fsm_sii_exec(&fsm->fsm_sii)) return;
+    if (ec_fsm_sii_exec(&fsm->fsm_sii, fsm->datagram)) return;
 
     if (!ec_fsm_sii_success(&fsm->fsm_sii)) {
         EC_SLAVE_ERR(slave, "Failed to write SII data.\n");
@@ -1199,7 +1395,7 @@ void ec_fsm_master_state_write_sii(
                 request->offset + fsm->sii_index,
                 request->words + fsm->sii_index,
                 EC_FSM_SII_USE_CONFIGURED_ADDRESS);
-        ec_fsm_sii_exec(&fsm->fsm_sii); // execute immediately
+        ec_fsm_sii_exec(&fsm->fsm_sii, fsm->datagram); // execute immediately
         return;
     }
 
@@ -1209,9 +1405,15 @@ void ec_fsm_master_state_write_sii(
 
     if (request->offset <= 4 && request->offset + request->nwords > 4) {
         // alias was written
-        slave->sii.alias = EC_READ_U16(request->words + 4);
-        // TODO: read alias from register 0x0012
-        slave->effective_alias = slave->sii.alias;
+        if (slave->sii_image) {
+            slave->sii_image->sii.alias = EC_READ_U16(request->words + 4);
+            // TODO: read alias from register 0x0012
+            slave->effective_alias = slave->sii_image->sii.alias;
+        }
+        else {
+            EC_SLAVE_WARN(slave, "Slave could not update effective alias."
+                    " SII data not available.\n");
+        }
     }
     // TODO: Evaluate other SII contents!
 
@@ -1221,84 +1423,6 @@ void ec_fsm_master_state_write_sii(
     // check for another SII write request
     if (ec_fsm_master_action_process_sii(fsm))
         return; // processing another request
-
-    ec_fsm_master_restart(fsm);
-}
-
-/*****************************************************************************/
-
-/** Master state: SDO DICTIONARY.
- */
-void ec_fsm_master_state_sdo_dictionary(
-        ec_fsm_master_t *fsm /**< Master state machine. */
-        )
-{
-    ec_slave_t *slave = fsm->slave;
-    ec_master_t *master = fsm->master;
-
-    if (ec_fsm_coe_exec(&fsm->fsm_coe, fsm->datagram)) {
-        return;
-    }
-
-    if (!ec_fsm_coe_success(&fsm->fsm_coe)) {
-        ec_fsm_master_restart(fsm);
-        return;
-    }
-
-    // SDO dictionary fetching finished
-
-    if (master->debug_level) {
-        unsigned int sdo_count, entry_count;
-        ec_slave_sdo_dict_info(slave, &sdo_count, &entry_count);
-        EC_SLAVE_DBG(slave, 1, "Fetched %u SDOs and %u entries.\n",
-               sdo_count, entry_count);
-    }
-
-    // attach pdo names from dictionary
-    ec_slave_attach_pdo_names(slave);
-
-    ec_fsm_master_restart(fsm);
-}
-
-/*****************************************************************************/
-
-/** Master state: SDO REQUEST.
- */
-void ec_fsm_master_state_sdo_request(
-        ec_fsm_master_t *fsm /**< Master state machine. */
-        )
-{
-    ec_sdo_request_t *request = fsm->sdo_request;
-
-    if (!request) {
-        // configuration was cleared in the meantime
-        ec_fsm_master_restart(fsm);
-        return;
-    }
-
-    if (ec_fsm_coe_exec(&fsm->fsm_coe, fsm->datagram)) {
-        return;
-    }
-
-    if (!ec_fsm_coe_success(&fsm->fsm_coe)) {
-        EC_SLAVE_DBG(fsm->slave, 1,
-                "Failed to process internal SDO request.\n");
-        request->state = EC_INT_REQUEST_FAILURE;
-        wake_up_all(&fsm->master->request_queue);
-        ec_fsm_master_restart(fsm);
-        return;
-    }
-
-    // SDO request finished
-    request->state = EC_INT_REQUEST_SUCCESS;
-    wake_up_all(&fsm->master->request_queue);
-
-    EC_SLAVE_DBG(fsm->slave, 1, "Finished internal SDO request.\n");
-
-    // check for another SDO request
-    if (ec_fsm_master_action_process_sdo(fsm)) {
-        return; // processing another request
-    }
 
     ec_fsm_master_restart(fsm);
 }

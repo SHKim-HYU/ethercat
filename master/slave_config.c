@@ -70,6 +70,7 @@ void ec_slave_config_init(
     sc->vendor_id = vendor_id;
     sc->product_code = product_code;
     sc->watchdog_divider = 0; // use default
+    sc->allow_overlapping_pdos = 0; // default not allowed
     sc->watchdog_intervals = 0; // use default
 
     sc->slave = NULL;
@@ -86,6 +87,7 @@ void ec_slave_config_init(
 
     INIT_LIST_HEAD(&sc->sdo_configs);
     INIT_LIST_HEAD(&sc->sdo_requests);
+    INIT_LIST_HEAD(&sc->foe_requests);
     INIT_LIST_HEAD(&sc->reg_requests);
     INIT_LIST_HEAD(&sc->voe_handlers);
     INIT_LIST_HEAD(&sc->soe_configs);
@@ -105,6 +107,7 @@ void ec_slave_config_clear(
 {
     unsigned int i;
     ec_sdo_request_t *req, *next_req;
+    ec_foe_request_t *foe, *next_foe;
     ec_voe_handler_t *voe, *next_voe;
     ec_reg_request_t *reg, *next_reg;
     ec_soe_request_t *soe, *next_soe;
@@ -127,6 +130,13 @@ void ec_slave_config_clear(
         list_del(&req->list);
         ec_sdo_request_clear(req);
         kfree(req);
+    }
+
+    // free all FoE requests
+    list_for_each_entry_safe(foe, next_foe, &sc->foe_requests, list) {
+        list_del(&foe->list);
+        ec_foe_request_clear(foe);
+        kfree(foe);
     }
 
     // free all register requests
@@ -181,7 +191,7 @@ int ec_slave_config_prepare_fmmu(
     for (i = 0; i < sc->used_fmmus; i++) {
         fmmu = &sc->fmmu_configs[i];
         if (fmmu->domain == domain && fmmu->sync_index == sync_index)
-            return fmmu->logical_start_address;
+            return fmmu->logical_domain_offset;
     }
 
     if (sc->used_fmmus == EC_MAX_FMMUS) {
@@ -189,13 +199,44 @@ int ec_slave_config_prepare_fmmu(
         return -EOVERFLOW;
     }
 
-    fmmu = &sc->fmmu_configs[sc->used_fmmus++];
+    fmmu = &sc->fmmu_configs[sc->used_fmmus];
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     ec_fmmu_config_init(fmmu, sc, domain, sync_index, dir);
-    up(&sc->master->master_sem);
 
-    return fmmu->logical_start_address;
+#if 0 //TODO overlapping PDOs
+    // Overlapping PDO Support from 4751747d4e6d
+    // FIXME FIXME FIXME FIXME FIXME FIXME FIXME FIXME FIXME
+    // parent code does not call ec_fmmu_config_domain
+    // FIXME FIXME FIXME FIXME FIXME FIXME FIXME FIXME FIXME
+    fmmu_logical_start_address = domain->tx_size;
+    tx_size = fmmu->data_size;
+
+    // FIXME is it enough to take only the *previous* FMMU into account?
+
+    // FIXME Need to qualify allow_overlapping_pdos with slave->sii.general_flags.enable_not_lrw
+
+    if (sc->allow_overlapping_pdos && sc->used_fmmus > 0) {
+        prev_fmmu = &sc->fmmu_configs[sc->used_fmmus - 1];
+        if (fmmu->dir != prev_fmmu->dir && prev_fmmu->tx_size != 0) {
+            // prev fmmu has opposite direction
+            // and is not already paired with prev-prev fmmu
+            old_prev_tx_size = prev_fmmu->tx_size;
+            prev_fmmu->tx_size = max(fmmu->data_size, prev_fmmu->data_size);
+            domain->tx_size += prev_fmmu->tx_size - old_prev_tx_size;
+            tx_size = 0;
+            fmmu_logical_start_address = prev_fmmu->logical_domain_offset;
+        }
+    }
+
+    ec_fmmu_config_domain(fmmu, domain, fmmu_logical_start_address, tx_size);
+    // Overlapping PDO Support from 4751747d4e6d
+#endif
+
+    sc->used_fmmus++;
+    ec_lock_up(&sc->master->master_sem);
+
+    return fmmu->logical_domain_offset;
 }
 
 /*****************************************************************************/
@@ -221,20 +262,27 @@ int ec_slave_config_attach(
     }
 
     if (slave->config) {
-        EC_CONFIG_DBG(sc, 1, "Failed to attach configuration. Slave %u"
-                " already has a configuration!\n", slave->ring_position);
+        EC_CONFIG_DBG(sc, 1, "Failed to attach configuration. Slave %s-%u"
+                " already has a configuration!\n",
+                ec_device_names[slave->device_index!=0], slave->ring_position);
         return -EEXIST;
+    }
+
+    if (!slave->sii_image) {
+        EC_CONFIG_DBG(sc, 1, "Slave cannot access its SII data!\n");
+        return -EAGAIN;
     }
 
     if (
 #ifdef EC_IDENT_WILDCARDS
             sc->vendor_id != 0xffffffff &&
 #endif
-            slave->sii.vendor_id != sc->vendor_id
+            slave->sii_image->sii.vendor_id != sc->vendor_id
        ) {
-        EC_CONFIG_DBG(sc, 1, "Slave %u has no matching vendor ID (0x%08X)"
+        EC_CONFIG_DBG(sc, 1, "Slave %s-%u has no matching vendor ID (0x%08X)"
                 " for configuration (0x%08X).\n",
-                slave->ring_position, slave->sii.vendor_id, sc->vendor_id);
+                ec_device_names[slave->device_index!=0], slave->ring_position,
+                slave->sii_image->sii.vendor_id, sc->vendor_id);
         return -EINVAL;
     }
 
@@ -242,12 +290,12 @@ int ec_slave_config_attach(
 #ifdef EC_IDENT_WILDCARDS
             sc->product_code != 0xffffffff &&
 #endif
-            slave->sii.product_code != sc->product_code
+            slave->sii_image->sii.product_code != sc->product_code
        ) {
-        EC_CONFIG_DBG(sc, 1, "Slave %u has no matching product code (0x%08X)"
+        EC_CONFIG_DBG(sc, 1, "Slave %s-%u has no matching product code (0x%08X)"
                 " for configuration (0x%08X).\n",
-                slave->ring_position, slave->sii.product_code,
-                sc->product_code);
+                ec_device_names[slave->device_index!=0], slave->ring_position,
+                slave->sii_image->sii.product_code, sc->product_code);
         return -EINVAL;
     }
 
@@ -255,7 +303,8 @@ int ec_slave_config_attach(
     slave->config = sc;
     sc->slave = slave;
 
-    EC_CONFIG_DBG(sc, 1, "Attached slave %u.\n", slave->ring_position);
+    EC_CONFIG_DBG(sc, 1, "Attached slave %s-%u.\n",
+                ec_device_names[slave->device_index!=0], slave->ring_position);
     return 0;
 }
 
@@ -276,6 +325,10 @@ void ec_slave_config_detach(
         list_for_each_entry(reg, &sc->reg_requests, list) {
             if (sc->slave->fsm.reg_request == reg) {
                 sc->slave->fsm.reg_request = NULL;
+                EC_SLAVE_WARN(sc->slave, "Aborting register request,"
+                        " slave is detaching.\n");
+                reg->state = EC_INT_REQUEST_FAILURE;
+                wake_up_all(&sc->slave->master->request_queue);
                 break;
             }
         }
@@ -328,9 +381,14 @@ void ec_slave_config_load_default_mapping(
     EC_CONFIG_DBG(sc, 1, "Loading default mapping for PDO 0x%04X.\n",
             pdo->index);
 
+    if (!sc->slave->sii_image) {
+        EC_CONFIG_DBG(sc, 1, "Slave cannot access its SII data!\n");
+        return;
+    }
+
     // find PDO in any sync manager (it could be reassigned later)
-    for (i = 0; i < sc->slave->sii.sync_count; i++) {
-        sync = &sc->slave->sii.syncs[i];
+    for (i = 0; i < sc->slave->sii_image->sii.sync_count; i++) {
+        sync = &sc->slave->sii_image->sii.syncs[i];
 
         list_for_each_entry(default_pdo, &sync->pdos.list, list) {
             if (default_pdo->index != pdo->index)
@@ -475,6 +533,28 @@ ec_sdo_request_t *ec_slave_config_find_sdo_request(
 
 /*****************************************************************************/
 
+/** Finds an FoE handler via its position in the list.
+ *
+ * \return Search result, or NULL.
+ */
+ec_foe_request_t *ec_slave_config_find_foe_request(
+        ec_slave_config_t *sc, /**< Slave configuration. */
+        unsigned int pos /**< Position in the list. */
+        )
+{
+    ec_foe_request_t *req;
+
+    list_for_each_entry(req, &sc->foe_requests, list) {
+        if (pos--)
+            continue;
+        return req;
+    }
+
+    return NULL;
+}
+
+/*****************************************************************************/
+
 /** Finds a register handler via its position in the list.
  *
  * \return Search result, or NULL.
@@ -515,6 +595,45 @@ ec_voe_handler_t *ec_slave_config_find_voe_handler(
     }
 
     return NULL;
+}
+
+/*****************************************************************************/
+
+/** Expires any requests that have been started on a detached slave.
+ */
+void ec_slave_config_expire_disconnected_requests(
+        ec_slave_config_t *sc /**< Slave configuration. */
+        )
+{
+    ec_sdo_request_t *sdo_req;
+    ec_foe_request_t *foe_req;
+    ec_reg_request_t *reg_req;
+
+    if (sc->slave) { return; }
+
+    list_for_each_entry(sdo_req, &sc->sdo_requests, list) {
+        if (sdo_req->state == EC_INT_REQUEST_QUEUED ||
+                sdo_req->state == EC_INT_REQUEST_BUSY) {
+            EC_CONFIG_DBG(sc, 1, "Aborting SDO request; no slave attached.\n");
+            sdo_req->state = EC_INT_REQUEST_FAILURE;
+        }
+    }
+
+    list_for_each_entry(foe_req, &sc->foe_requests, list) {
+        if (foe_req->state == EC_INT_REQUEST_QUEUED ||
+                foe_req->state == EC_INT_REQUEST_BUSY) {
+            EC_CONFIG_DBG(sc, 1, "Aborting FoE request; no slave attached.\n");
+            foe_req->state = EC_INT_REQUEST_FAILURE;
+        }
+    }
+
+    list_for_each_entry(reg_req, &sc->reg_requests, list) {
+        if (reg_req->state == EC_INT_REQUEST_QUEUED ||
+                reg_req->state == EC_INT_REQUEST_BUSY) {
+            EC_CONFIG_DBG(sc, 1, "Aborting register request; no slave attached.\n");
+            reg_req->state = EC_INT_REQUEST_FAILURE;
+        }
+    }
 }
 
 /******************************************************************************
@@ -560,6 +679,17 @@ void ecrt_slave_config_watchdog(ec_slave_config_t *sc,
 
 /*****************************************************************************/
 
+void ecrt_slave_config_overlapping_pdos(ec_slave_config_t *sc,
+        uint8_t allow_overlapping_pdos )
+{
+    EC_CONFIG_DBG(sc, 1, "%s(sc = 0x%p, allow_overlapping_pdos = %u)\n",
+                __func__, sc, allow_overlapping_pdos);
+
+    sc->allow_overlapping_pdos = allow_overlapping_pdos;
+}
+
+/*****************************************************************************/
+
 int ecrt_slave_config_pdo_assign_add(ec_slave_config_t *sc,
         uint8_t sync_index, uint16_t pdo_index)
 {
@@ -573,18 +703,18 @@ int ecrt_slave_config_pdo_assign_add(ec_slave_config_t *sc,
         return -EINVAL;
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
 
     pdo = ec_pdo_list_add_pdo(&sc->sync_configs[sync_index].pdos, pdo_index);
     if (IS_ERR(pdo)) {
-        up(&sc->master->master_sem);
+        ec_lock_up(&sc->master->master_sem);
         return PTR_ERR(pdo);
     }
     pdo->sync_index = sync_index;
 
     ec_slave_config_load_default_mapping(sc, pdo);
 
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
     return 0;
 }
 
@@ -601,9 +731,9 @@ void ecrt_slave_config_pdo_assign_clear(ec_slave_config_t *sc,
         return;
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     ec_pdo_list_clear_pdos(&sc->sync_configs[sync_index].pdos);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
 }
 
 /*****************************************************************************/
@@ -629,10 +759,10 @@ int ecrt_slave_config_pdo_mapping_add(ec_slave_config_t *sc,
             break;
 
     if (pdo) {
-        down(&sc->master->master_sem);
+        ec_lock_down(&sc->master->master_sem);
         entry = ec_pdo_add_entry(pdo, entry_index, entry_subindex,
                 entry_bit_length);
-        up(&sc->master->master_sem);
+        ec_lock_up(&sc->master->master_sem);
         if (IS_ERR(entry))
             retval = PTR_ERR(entry);
     } else {
@@ -660,9 +790,9 @@ void ecrt_slave_config_pdo_mapping_clear(ec_slave_config_t *sc,
             break;
 
     if (pdo) {
-        down(&sc->master->master_sem);
+        ec_lock_down(&sc->master->master_sem);
         ec_pdo_clear_entries(pdo);
-        up(&sc->master->master_sem);
+        ec_lock_up(&sc->master->master_sem);
     } else {
         EC_CONFIG_WARN(sc, "PDO 0x%04X is not assigned.\n", pdo_index);
     }
@@ -714,9 +844,9 @@ int ecrt_slave_config_pdos(ec_slave_config_t *sc,
                 if (ret)
                     return ret;
 
-                ecrt_slave_config_pdo_mapping_clear(sc, pdo_info->index);
-
                 if (pdo_info->n_entries && pdo_info->entries) {
+                    ecrt_slave_config_pdo_mapping_clear(sc, pdo_info->index);
+
                     for (k = 0; k < pdo_info->n_entries; k++) {
                         entry_info = &pdo_info->entries[k];
 
@@ -870,8 +1000,25 @@ void ecrt_slave_config_dc(ec_slave_config_t *sc, uint16_t assign_activate,
     sc->dc_assign_activate = assign_activate;
     sc->dc_sync[0].cycle_time = sync0_cycle_time;
     sc->dc_sync[0].shift_time = sync0_shift_time;
-    sc->dc_sync[1].cycle_time = sync1_cycle_time;
-    sc->dc_sync[1].shift_time = sync1_shift_time;
+    if (sync0_cycle_time > 0)
+    {
+        sc->dc_sync[1].shift_time = (sync1_cycle_time + sync1_shift_time) %
+                sync0_cycle_time;
+              
+        if ((sync1_cycle_time + sync1_shift_time) < sc->dc_sync[1].shift_time) {
+            EC_CONFIG_ERR(sc, "Slave Config DC results in a negative "
+                    "sync1 cycle.  Resetting to zero cycle and shift time\n");
+
+            sc->dc_sync[1].cycle_time = 0;
+            sc->dc_sync[1].shift_time = 0;
+        } else {
+            sc->dc_sync[1].cycle_time = (sync1_cycle_time + sync1_shift_time) -
+                    sc->dc_sync[1].shift_time;
+        }
+    } else {
+        sc->dc_sync[1].cycle_time = 0;
+        sc->dc_sync[1].shift_time = 0;
+    }
 }
 
 /*****************************************************************************/
@@ -887,7 +1034,7 @@ int ecrt_slave_config_sdo(ec_slave_config_t *sc, uint16_t index,
             "subindex = 0x%02X, data = 0x%p, size = %zu)\n",
             __func__, sc, index, subindex, data, size);
 
-    if (slave && !(slave->sii.mailbox_protocols & EC_MBOX_COE)) {
+    if (slave && slave->sii_image && !(slave->sii_image->sii.mailbox_protocols & EC_MBOX_COE)) {
         EC_CONFIG_WARN(sc, "Attached slave does not support CoE!\n");
     }
 
@@ -908,9 +1055,9 @@ int ecrt_slave_config_sdo(ec_slave_config_t *sc, uint16_t index,
         return ret;
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     list_add_tail(&req->list, &sc->sdo_configs);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
     return 0;
 }
 
@@ -971,7 +1118,7 @@ int ecrt_slave_config_complete_sdo(ec_slave_config_t *sc, uint16_t index,
     EC_CONFIG_DBG(sc, 1, "%s(sc = 0x%p, index = 0x%04X, "
             "data = 0x%p, size = %zu)\n", __func__, sc, index, data, size);
 
-    if (slave && !(slave->sii.mailbox_protocols & EC_MBOX_COE)) {
+    if (slave && !(slave->sii_image->sii.mailbox_protocols & EC_MBOX_COE)) {
         EC_CONFIG_WARN(sc, "Attached slave does not support CoE!\n");
     }
 
@@ -983,8 +1130,7 @@ int ecrt_slave_config_complete_sdo(ec_slave_config_t *sc, uint16_t index,
     }
 
     ec_sdo_request_init(req);
-    ecrt_sdo_request_index(req, index, 0);
-    req->complete_access = 1;
+    ecrt_sdo_request_index_complete(req, index);
 
     ret = ec_sdo_request_copy_data(req, data, size);
     if (ret < 0) {
@@ -993,9 +1139,9 @@ int ecrt_slave_config_complete_sdo(ec_slave_config_t *sc, uint16_t index,
         return ret;
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     list_add_tail(&req->list, &sc->sdo_configs);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
     return 0;
 }
 
@@ -1033,14 +1179,14 @@ int ecrt_slave_config_emerg_overruns(ec_slave_config_t *sc)
  * value.
  */
 ec_sdo_request_t *ecrt_slave_config_create_sdo_request_err(
-        ec_slave_config_t *sc, uint16_t index, uint8_t subindex, size_t size)
+        ec_slave_config_t *sc, uint16_t index, uint8_t subindex, uint8_t complete, size_t size)
 {
     ec_sdo_request_t *req;
     int ret;
 
     EC_CONFIG_DBG(sc, 1, "%s(sc = 0x%p, "
-            "index = 0x%04X, subindex = 0x%02X, size = %zu)\n",
-            __func__, sc, index, subindex, size);
+            "index = 0x%04X, subindex = 0x%02X, complete = %u, size = %zu)\n",
+            __func__, sc, index, subindex, complete, size);
 
     if (!(req = (ec_sdo_request_t *)
                 kmalloc(sizeof(ec_sdo_request_t), GFP_KERNEL))) {
@@ -1049,8 +1195,12 @@ ec_sdo_request_t *ecrt_slave_config_create_sdo_request_err(
     }
 
     ec_sdo_request_init(req);
-    ecrt_sdo_request_index(req, index, subindex);
-
+    if (complete) {
+        ecrt_sdo_request_index_complete(req, index);
+    }
+    else {
+        ecrt_sdo_request_index(req, index, subindex);
+    }
     ret = ec_sdo_request_alloc(req, size);
     if (ret < 0) {
         ec_sdo_request_clear(req);
@@ -1062,9 +1212,9 @@ ec_sdo_request_t *ecrt_slave_config_create_sdo_request_err(
     memset(req->data, 0x00, size);
     req->data_size = size;
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     list_add_tail(&req->list, &sc->sdo_requests);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
 
     return req;
 }
@@ -1075,7 +1225,68 @@ ec_sdo_request_t *ecrt_slave_config_create_sdo_request(
         ec_slave_config_t *sc, uint16_t index, uint8_t subindex, size_t size)
 {
     ec_sdo_request_t *s = ecrt_slave_config_create_sdo_request_err(sc, index,
-            subindex, size);
+            subindex, 0, size);
+    return IS_ERR(s) ? NULL : s;
+}
+
+/*****************************************************************************/
+
+ec_sdo_request_t *ecrt_slave_config_create_sdo_request_complete(
+        ec_slave_config_t *sc, uint16_t index, size_t size)
+{
+    ec_sdo_request_t *s = ecrt_slave_config_create_sdo_request_err(sc, index,
+            0, 1, size);
+    return IS_ERR(s) ? NULL : s;
+}
+
+/*****************************************************************************/
+
+/** Same as ecrt_slave_config_create_foe_request(), but with ERR_PTR() return
+ * value.
+ */
+ec_foe_request_t *ecrt_slave_config_create_foe_request_err(
+        ec_slave_config_t *sc, size_t size)
+{
+    ec_foe_request_t *req;
+    int ret;
+
+    EC_CONFIG_DBG(sc, 1, "%s(sc = 0x%p, size = %zu)\n",
+            __func__, sc, size);
+
+    if (!(req = (ec_foe_request_t *)
+                kmalloc(sizeof(ec_foe_request_t), GFP_KERNEL))) {
+        EC_CONFIG_ERR(sc, "Failed to allocate FoE request memory!\n");
+        return ERR_PTR(-ENOMEM);
+    }
+
+    ec_foe_request_init(req);
+
+    ret = ec_foe_request_alloc(req, size);
+    if (ret < 0) {
+        ec_foe_request_clear(req);
+        kfree(req);
+        EC_CONFIG_ERR(sc, "Failed to allocate FoE request data "
+                "memory (size=%zu)!\n", size);
+        return ERR_PTR(ret);
+    }
+
+    // prepare data for optional writing
+    memset(req->buffer, 0x00, size);
+    req->data_size = size;
+
+    ec_lock_down(&sc->master->master_sem);
+    list_add_tail(&req->list, &sc->foe_requests);
+    ec_lock_up(&sc->master->master_sem);
+
+    return req;
+}
+
+/*****************************************************************************/
+
+ec_foe_request_t *ecrt_slave_config_create_foe_request(
+        ec_slave_config_t *sc, size_t size)
+{
+    ec_foe_request_t *s = ecrt_slave_config_create_foe_request_err(sc, size);
     return IS_ERR(s) ? NULL : s;
 }
 
@@ -1105,9 +1316,9 @@ ec_reg_request_t *ecrt_slave_config_create_reg_request_err(
         return ERR_PTR(ret);
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     list_add_tail(&reg->list, &sc->reg_requests);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
 
     return reg;
 }
@@ -1147,9 +1358,9 @@ ec_voe_handler_t *ecrt_slave_config_create_voe_handler_err(
         return ERR_PTR(ret);
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     list_add_tail(&voe->list, &sc->voe_handlers);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
 
     return voe;
 }
@@ -1175,9 +1386,15 @@ void ecrt_slave_config_state(const ec_slave_config_t *sc,
             sc->slave->current_state == EC_SLAVE_STATE_OP
             && !sc->slave->force_config;
         state->al_state = sc->slave->current_state;
+        state->error_flag = sc->slave->error_flag ? 1 : 0;
+        state->ready = ec_fsm_slave_is_ready(&sc->slave->fsm) ? 1 : 0;
+        state->position = sc->slave->ring_position;
     } else {
         state->operational = 0;
         state->al_state = EC_SLAVE_STATE_UNKNOWN;
+        state->error_flag = 0;
+        state->ready = 0;
+        state->position = (uint16_t) -1;
     }
 }
 
@@ -1207,7 +1424,7 @@ int ecrt_slave_config_idn(ec_slave_config_t *sc, uint8_t drive_no,
         return -EINVAL;
     }
 
-    if (slave && !(slave->sii.mailbox_protocols & EC_MBOX_SOE)) {
+    if (slave && slave->sii_image && !(slave->sii_image->sii.mailbox_protocols & EC_MBOX_SOE)) {
         EC_CONFIG_WARN(sc, "Attached slave does not support SoE!\n");
     }
 
@@ -1230,9 +1447,9 @@ int ecrt_slave_config_idn(ec_slave_config_t *sc, uint8_t drive_no,
         return ret;
     }
 
-    down(&sc->master->master_sem);
+    ec_lock_down(&sc->master->master_sem);
     list_add_tail(&req->list, &sc->soe_configs);
-    up(&sc->master->master_sem);
+    ec_lock_up(&sc->master->master_sem);
     return 0;
 }
 
@@ -1259,6 +1476,8 @@ EXPORT_SYMBOL(ecrt_slave_config_emerg_pop);
 EXPORT_SYMBOL(ecrt_slave_config_emerg_clear);
 EXPORT_SYMBOL(ecrt_slave_config_emerg_overruns);
 EXPORT_SYMBOL(ecrt_slave_config_create_sdo_request);
+EXPORT_SYMBOL(ecrt_slave_config_create_sdo_request_complete);
+EXPORT_SYMBOL(ecrt_slave_config_create_foe_request);
 EXPORT_SYMBOL(ecrt_slave_config_create_voe_handler);
 EXPORT_SYMBOL(ecrt_slave_config_create_reg_request);
 EXPORT_SYMBOL(ecrt_slave_config_state);

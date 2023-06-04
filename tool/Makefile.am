@@ -44,15 +44,19 @@ ethercat_SOURCES = \
 	CommandConfig.cpp \
 	CommandData.cpp \
 	CommandDebug.cpp \
+	CommandDiag.cpp \
 	CommandDomains.cpp \
 	CommandDownload.cpp \
 	CommandFoeRead.cpp \
 	CommandFoeWrite.cpp \
 	CommandGraph.cpp \
 	CommandMaster.cpp \
+	CommandPcap.cpp \
 	CommandPdos.cpp \
 	CommandRegRead.cpp \
 	CommandRegWrite.cpp \
+	CommandRegReadWrite.cpp \
+	CommandReboot.cpp \
 	CommandRescan.cpp \
 	CommandSdos.cpp \
 	CommandSiiRead.cpp \
@@ -73,12 +77,6 @@ ethercat_SOURCES = \
 	main.cpp \
 	sii_crc.cpp
 
-if ENABLE_EOE
-ethercat_SOURCES += CommandEoe.cpp
-else
-EXTRA_DIST += CommandEoe.cpp
-endif
-
 noinst_HEADERS = \
 	Command.h \
 	CommandAlias.h \
@@ -87,15 +85,19 @@ noinst_HEADERS = \
 	CommandConfig.h \
 	CommandData.h \
 	CommandDebug.h \
+	CommandDiag.h \
 	CommandDomains.h \
 	CommandDownload.h \
 	CommandFoeRead.h \
 	CommandFoeWrite.h \
 	CommandGraph.h \
 	CommandMaster.h \
+	CommandPcap.h \
 	CommandPdos.h \
 	CommandRegRead.h \
 	CommandRegWrite.h \
+	CommandRegReadWrite.h \
+	CommandReboot.h \
 	CommandRescan.h \
 	CommandSdos.h \
 	CommandSiiRead.h \
@@ -116,15 +118,32 @@ noinst_HEADERS = \
 	sii_crc.h
 
 if ENABLE_EOE
-noinst_HEADERS += CommandEoe.h
+ethercat_SOURCES += \
+	CommandEoe.cpp \
+	CommandEoeAddIf.cpp \
+	CommandEoeDelIf.cpp \
+	CommandIp.cpp
+noinst_HEADERS += \
+	CommandEoe.h \
+	CommandEoeAddIf.h \
+	CommandEoeDelIf.h \
+	CommandIp.h
 else
-EXTRA_DIST += CommandEoe.h
+EXTRA_DIST += \
+	CommandEoe.cpp \
+	CommandEoeAddIf.cpp \
+	CommandEoeDelIf.cpp \
+	CommandIp.cpp \
+	CommandEoe.h \
+	CommandEoeAddIf.h \
+	CommandEoeDelIf.h \
+	CommandIp.h
 endif
 
 REV = `if test -s $(top_srcdir)/revision; then \
 		cat $(top_srcdir)/revision; \
 	else \
-		git -C $(top_srcdir) describe 2>/dev/null || echo "unknown"; \
+		hg id -i $(top_srcdir) 2>/dev/null || echo "unknown"; \
 	fi`
 
 ethercat_CXXFLAGS = \

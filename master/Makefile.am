@@ -26,7 +26,6 @@
 #  industrial property and similar rights of Beckhoff Automation GmbH.
 #
 #------------------------------------------------------------------------------
-include $(top_srcdir)/Makefile.kbuild
 
 # using HEADERS to enable tags target
 noinst_HEADERS = \
@@ -38,13 +37,15 @@ noinst_HEADERS = \
 	device.c device.h \
 	domain.c domain.h \
 	doxygen.c \
+	eoe_request.c eoe_request.h \
 	ethernet.c ethernet.h \
 	fmmu_config.c fmmu_config.h \
-	foe.h \
 	foe_request.c foe_request.h \
 	fsm_change.c fsm_change.h \
 	fsm_coe.c fsm_coe.h \
+	fsm_eoe.c fsm_eoe.h \
 	fsm_foe.c fsm_foe.h \
+	fsm_reboot.c fsm_reboot.h \
 	fsm_master.c fsm_master.h \
 	fsm_pdo.c fsm_pdo.h \
 	fsm_pdo_entry.c fsm_pdo_entry.h \
@@ -53,10 +54,11 @@ noinst_HEADERS = \
 	fsm_slave_config.c fsm_slave_config.h \
 	fsm_slave_scan.c fsm_slave_scan.h \
 	fsm_soe.c fsm_soe.h \
+	fsm_mbox_gateway.c fsm_mbox_gateway.h \
 	globals.h \
 	ioctl.c ioctl.h \
 	mailbox.c mailbox.h \
-	master.c master.h \
+	master.c master.h locks.h \
 	module.c \
 	pdo.c pdo.h \
 	pdo_entry.c pdo_entry.h \
@@ -64,15 +66,35 @@ noinst_HEADERS = \
 	reg_request.c reg_request.h \
 	rtdm-ioctl.c \
 	rtdm.c rtdm.h \
+	rtdm_xenomai_v3.c \
 	sdo.c sdo.h \
 	sdo_entry.c sdo_entry.h \
 	sdo_request.c sdo_request.h \
+	sii_firmware.c sii_firmware.h \
 	slave.c slave.h \
 	slave_config.c slave_config.h \
 	soe_errors.c \
 	soe_request.c soe_request.h \
+	mbox_gateway_request.c mbox_gateway_request.h \
 	sync.c sync.h \
 	sync_config.c sync_config.h \
-	voe_handler.c voe_handler.h
+	voe_handler.c voe_handler.h \
+	dict_request.c dict_request.h
+
+EXTRA_DIST = \
+	Kbuild.in
+
+BUILT_SOURCES = \
+	Kbuild
+
+modules:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" modules
+
+modules_install:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" \
+		INSTALL_MOD_DIR="$(INSTALL_MOD_DIR)" modules_install
+
+clean-local:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" clean
 
 #------------------------------------------------------------------------------

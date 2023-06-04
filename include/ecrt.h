@@ -142,13 +142,17 @@
  */
 #define ECRT_VER_MINOR 5
 
+/** EtherCAT realtime interface patchlevel number.
+ */
+#define ECRT_VER_PATCH 10
+
 /** EtherCAT realtime interface version word generator.
  */
-#define ECRT_VERSION(a, b) (((a) << 8) + (b))
+#define ECRT_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
 
 /** EtherCAT realtime interface version word.
  */
-#define ECRT_VERSION_MAGIC ECRT_VERSION(ECRT_VER_MAJOR, ECRT_VER_MINOR)
+#define ECRT_VERSION_MAGIC ECRT_VERSION(ECRT_VER_MAJOR, ECRT_VER_MINOR, ECRT_VER_PATCH)
 
 /******************************************************************************
  * Feature flags
@@ -245,11 +249,14 @@ typedef struct ec_domain ec_domain_t; /**< \see ec_domain */
 struct ec_sdo_request;
 typedef struct ec_sdo_request ec_sdo_request_t; /**< \see ec_sdo_request. */
 
+struct ec_foe_request;
+typedef struct ec_foe_request ec_foe_request_t; /**< \see ec_foe_request. */
+
 struct ec_voe_handler;
 typedef struct ec_voe_handler ec_voe_handler_t; /**< \see ec_voe_handler. */
 
 struct ec_reg_request;
-typedef struct ec_reg_request ec_reg_request_t; /**< \see ec_sdo_request. */
+typedef struct ec_reg_request ec_reg_request_t; /**< \see ec_reg_request. */
 
 /*****************************************************************************/
 
@@ -273,6 +280,7 @@ typedef struct {
                                   - Bit 3: \a OP */
     unsigned int link_up : 1; /**< \a true, if at least one Ethernet link is
                                 up. */
+    unsigned int scan_busy : 1; /**< \a true, if a slave rescan is in progress */
 } ec_master_state_t;
 
 /*****************************************************************************/
@@ -319,6 +327,9 @@ typedef struct  {
 
                                  Note that each state is coded in a different
                                  bit! */
+    unsigned int error_flag : 1; /**< The slave has an unrecoverable error. */
+    unsigned int ready : 1; /**< The slave is ready for external requests. */
+    uint16_t position; /**< Offset of the slave in the ring. */
 } ec_slave_config_state_t;
 
 /*****************************************************************************/
@@ -355,6 +366,7 @@ typedef struct {
     uint8_t link_up; /**< Link detected. */
     uint8_t loop_closed; /**< Loop closed. */
     uint8_t signal_detected; /**< Detected signal on RX port. */
+    uint8_t bypassed; /**< Packets are bypassing this port (eg. redundancy) */
 } ec_slave_port_link_t;
 
 /*****************************************************************************/
@@ -382,8 +394,11 @@ typedef struct {
                                port.  */
         uint32_t delay_to_next_dc; /**< Delay [ns] to next DC slave. */
     } ports[EC_MAX_PORTS]; /**< Port information. */
+    uint8_t upstream_port; /**< Index of upstream (master facing) port */
     uint8_t al_state; /**< Current state of the slave. */
     uint8_t error_flag; /**< Error flag for that slave. */
+    uint8_t scan_required; /**< The slave is being scanned. */
+    uint8_t ready; /**< The slave is ready for external requests. */
     uint8_t sync_count; /**< Number of sync managers. */
     uint16_t sdo_count; /**< Number of SDOs. */
     char name[EC_MAX_STRING_LENGTH]; /**< Name of the slave. */
@@ -422,6 +437,7 @@ typedef enum {
     EC_DIR_INVALID, /**< Invalid direction. Do not use this value. */
     EC_DIR_OUTPUT, /**< Values written by the master. */
     EC_DIR_INPUT, /**< Values read by the master. */
+    EC_DIR_BOTH, /**< Values read and written by the master. */
     EC_DIR_COUNT /**< Number of directions. For internal use only. */
 } ec_direction_t;
 
@@ -524,6 +540,30 @@ typedef enum {
     EC_REQUEST_SUCCESS, /**< Request was processed successfully. */
     EC_REQUEST_ERROR, /**< Request processing failed. */
 } ec_request_state_t;
+
+/*****************************************************************************/
+
+/** FoE error enumeration type.
+ */
+typedef enum {
+    FOE_BUSY               = 0, /**< Busy. */
+    FOE_READY              = 1, /**< Ready. */
+    FOE_IDLE               = 2, /**< Idle. */
+    FOE_WC_ERROR           = 3, /**< Working counter error. */
+    FOE_RECEIVE_ERROR      = 4, /**< Receive error. */
+    FOE_PROT_ERROR         = 5, /**< Protocol error. */
+    FOE_NODATA_ERROR       = 6, /**< No data error. */
+    FOE_PACKETNO_ERROR     = 7, /**< Packet number error. */
+    FOE_OPCODE_ERROR       = 8, /**< OpCode error. */
+    FOE_TIMEOUT_ERROR      = 9, /**< Timeout error. */
+    FOE_SEND_RX_DATA_ERROR = 10, /**< Error sending received data. */
+    FOE_RX_DATA_ACK_ERROR  = 11, /**< Error acknowledging received data. */
+    FOE_ACK_ERROR          = 12, /**< Acknowledge error. */
+    FOE_MBOX_FETCH_ERROR   = 13, /**< Error fetching data from mailbox. */
+    FOE_READ_NODATA_ERROR  = 14, /**< No data while reading. */
+    FOE_MBOX_PROT_ERROR    = 15, /**< Mailbox protocol error. */
+    FOE_READ_OVER_ERROR    = 16, /**< Read buffer overflow. */
+} ec_foe_error_t;
 
 /*****************************************************************************/
 
@@ -663,6 +703,20 @@ void ecrt_master_callbacks(
  * \return Pointer to the new domain on success, else NULL.
  */
 ec_domain_t *ecrt_master_create_domain(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+
+/** setup the domain's process data memory.
+ *
+ * Call this after all PDO entries have been registered and before activating
+ * the master.
+ *
+ * Call this if you need to access the domain memory before activating the
+ * master
+ *
+ * \return 0 on success, else non-zero.
+ */
+int ecrt_master_setup_domain_memory(
         ec_master_t *master /**< EtherCAT master. */
         );
 
@@ -819,7 +873,7 @@ int ecrt_master_sdo_download(
         uint16_t slave_position, /**< Slave position. */
         uint16_t index, /**< Index of the SDO. */
         uint8_t subindex, /**< Subindex of the SDO. */
-        uint8_t *data, /**< Data buffer to download. */
+        const uint8_t *data, /**< Data buffer to download. */
         size_t data_size, /**< Size of the data buffer. */
         uint32_t *abort_code /**< Abort code of the SDO download. */
         );
@@ -838,7 +892,7 @@ int ecrt_master_sdo_download_complete(
         ec_master_t *master, /**< EtherCAT master. */
         uint16_t slave_position, /**< Slave position. */
         uint16_t index, /**< Index of the SDO. */
-        uint8_t *data, /**< Data buffer to download. */
+        const uint8_t *data, /**< Data buffer to download. */
         size_t data_size, /**< Size of the data buffer. */
         uint32_t *abort_code /**< Abort code of the SDO download. */
         );
@@ -857,6 +911,25 @@ int ecrt_master_sdo_upload(
         uint16_t slave_position, /**< Slave position. */
         uint16_t index, /**< Index of the SDO. */
         uint8_t subindex, /**< Subindex of the SDO. */
+        uint8_t *target, /**< Target buffer for the upload. */
+        size_t target_size, /**< Size of the target buffer. */
+        size_t *result_size, /**< Uploaded data size. */
+        uint32_t *abort_code /**< Abort code of the SDO upload. */
+        );
+
+/** Executes an SDO upload request to read data from a slave via complete access.
+ *
+ * This request is processed by the master state machine. This method blocks,
+ * until the request has been processed and may not be called in realtime
+ * context.
+ *
+ * \retval  0 Success.
+ * \retval <0 Error code.
+ */
+int ecrt_master_sdo_upload_complete(
+        ec_master_t *master, /**< EtherCAT master. */
+        uint16_t slave_position, /**< Slave position. */
+        uint16_t index, /**< Index of the SDO. */
         uint8_t *target, /**< Target buffer for the upload. */
         size_t target_size, /**< Size of the target buffer. */
         size_t *result_size, /**< Uploaded data size. */
@@ -924,6 +997,19 @@ int ecrt_master_activate(
         ec_master_t *master /**< EtherCAT master. */
         );
 
+/** Deactivates the slaves distributed clocks and sends the slaves into PREOP.
+ *
+ * This can be called prior to ecrt_master_deactivate to avoid the slaves
+ * getting sync errors.
+ *
+ * This method should be called in realtime context.
+ *
+ * Note: EoE slaves will not be changed to PREOP.
+ */
+void ecrt_master_deactivate_slaves(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+
 /** Deactivates the master.
  *
  * Removes the bus configuration. All objects created by
@@ -960,8 +1046,10 @@ int ecrt_master_set_send_interval(
  *
  * Has to be called cyclically by the application after ecrt_master_activate()
  * has returned.
+ *
+ * Returns the number of bytes sent.
  */
-void ecrt_master_send(
+size_t ecrt_master_send(
         ec_master_t *master /**< EtherCAT master. */
         );
 
@@ -983,10 +1071,75 @@ void ecrt_master_receive(
  *
  * This method has to be called in the send callback function passed via
  * ecrt_master_callbacks() to allow the sending of non-application datagrams.
+ *
+ * Returns the number of bytes sent.
  */
-void ecrt_master_send_ext(
+size_t ecrt_master_send_ext(
         ec_master_t *master /**< EtherCAT master. */
         );
+
+#if !defined(__KERNEL__) && defined(EC_RTDM) && (EC_EOE)
+
+/** check if there are any open eoe handlers
+ *
+ * used by user space code to process EOE handlers
+ *
+ * \return 1 if any eoe handlers are open, zero if not,
+ *   otherwise a negative error code.
+ */
+int ecrt_master_eoe_is_open(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+
+/** return flag from ecrt_master_eoe_process() to indicate there is
+ * something to send.  if this flag is set call ecrt_master_send_ext()
+ */
+#define EOE_STH_TO_SEND 1
+
+/** return flag from ecrt_master_eoe_process() to indicate there is
+ * something still pending.  if this flag is set yield the process
+ * before starting the cycle again quickly, else sleep for a short time
+ * (e.g. 1ms)
+ */
+
+#define EOE_STH_PENDING 2
+
+/** Check if any EOE handlers are open.
+ *
+ * used by user space code to process EOE handlers
+ *
+ * \return 1 if something to send +
+ *   2 if an eoe handler has something still pending
+ */
+int ecrt_master_eoe_process(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+        
+#endif /* !defined(__KERNEL__) && defined(EC_RTDM) && (EC_EOE) */
+
+#ifdef EC_EOE
+
+/** add an EOE network interface
+ *
+ * \return 0 on success else negative error code
+ */
+int ecrt_master_eoe_addif(
+        ec_master_t *master, /**< EtherCAT master. */
+        uint16_t alias, /**< slave alias. */
+        uint16_t posn /**< slave position. */
+        );
+        
+/** delete an EOE network interface
+ *
+ * \return 0 on success else negative error code
+ */
+int ecrt_master_eoe_delif(
+        ec_master_t *master, /**< EtherCAT master. */
+        uint16_t alias, /**< slave alias. */
+        uint16_t posn /**< slave position. */
+        );
+
+#endif /* EC_EOE */
 
 /** Reads the current master state.
  *
@@ -1087,6 +1240,33 @@ int ecrt_master_reference_clock_time(
         uint32_t *time /**< Pointer to store the queried system time. */
         );
 
+/** Queues the 64bit dc reference slave clock time value datagram for sending.
+ *
+ * The datagram read the 64bit dc timestamp of the DC reference slave.
+ * (register \a 0x0910:0x0917). The result can be checked with the 
+ * ecrt_master_64bit_reference_clock_time() method.
+ */
+void ecrt_master_64bit_reference_clock_time_queue(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+
+/** Get the 64bit dc reference slave clock time.
+ * 
+ * ecrt_master_64bit_reference_clock_time_queue() must be called in the cycle
+ * prior to calling this method
+ *
+ * \attention The returned time is the system time of the reference clock
+ * minus the transmission delay of the reference clock.
+ *
+ * \retval 0 success, system time was written into \a time.
+ * \retval -ENXIO No reference clock found.
+ * \retval -EIO Slave synchronization datagram was not received.
+ */
+int ecrt_master_64bit_reference_clock_time(
+        ec_master_t *master, /**< EtherCAT master. */
+        uint64_t *time /**< Pointer to store the queried time. */
+        );
+
 /** Queues the DC synchrony monitoring datagram for sending.
  *
  * The datagram broadcast-reads all "System time difference" registers (\a
@@ -1106,6 +1286,34 @@ void ecrt_master_sync_monitor_queue(
  * \return Upper estimation of the maximum time difference in ns.
  */
 uint32_t ecrt_master_sync_monitor_process(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+
+/** Selects whether to process slave requests by the application or the master
+ *
+ * if rt_slave_requests \a True, slave requests are to be handled by calls to 
+ * ecrt_master_exec_requests() from the applications realtime context,
+ * otherwise the master will handle them from its operation thread
+ *
+ * \return 0 on success, otherwise negative error code.
+ */
+int ecrt_master_rt_slave_requests(
+        ec_master_t *master, /**< EtherCAT master. */
+        unsigned int rt_slave_requests /**< if \a True, slave requests are
+                                       to be handled by calls to 
+                                      ecrt_master_exec_requests() from
+                                      the applications realtime context. */
+        );
+
+/** Explicit call to process slave requests.
+ *
+ * This needs to be called on a cyclical period by the applications
+ * realtime context if ecrt_master_rt_slave_requests() has been called
+ * with rt_slave_requests set to true.  If rt_slave_requests is \a False
+ * (the default) slave requests will be processed within the master and
+ * this call will be ignored.
+ */
+void ecrt_master_exec_slave_requests(
         ec_master_t *master /**< EtherCAT master. */
         );
 
@@ -1158,6 +1366,17 @@ void ecrt_slave_config_watchdog(
                                       is not written, so the default is used.
                                      */
         );
+
+/** Configure whether a slave allows overlapping PDOs.
+ *
+ * Overlapping PDOs allows inputs to use the same space as outputs on the frame.
+ * This reduces the frame length.
+ */
+void ecrt_slave_config_overlapping_pdos(
+        ec_slave_config_t *sc, /**< Slave configuration. */
+        uint8_t allow_overlapping_pdos /**< Allow overlapping PDOs */
+        );
+
 
 /** Add a PDO to a sync manager's PDO assignment.
  *
@@ -1549,6 +1768,38 @@ ec_sdo_request_t *ecrt_slave_config_create_sdo_request(
         size_t size /**< Data size to reserve. */
         );
 
+/** Create an SDO request to exchange SDOs during realtime operation
+ *  using complete access.
+ *
+ * The created SDO request object is freed automatically when the master is
+ * released.
+ *
+ * This method has to be called in non-realtime context before
+ * ecrt_master_activate().
+ *
+ * \return New SDO request, or NULL on error.
+ */
+ec_sdo_request_t *ecrt_slave_config_create_sdo_request_complete(
+        ec_slave_config_t *sc, /**< Slave configuration. */
+        uint16_t index, /**< SDO index. */
+        size_t size /**< Data size to reserve. */
+        );
+
+/** Create an FoE request to exchange files during realtime operation.
+ *
+ * The created FoE request object is freed automatically when the master is
+ * released.
+ *
+ * This method has to be called in non-realtime context before
+ * ecrt_master_activate().
+ *
+ * \return New FoE request, or NULL on error.
+ */
+ec_foe_request_t *ecrt_slave_config_create_foe_request(
+        ec_slave_config_t *sc, /**< Slave configuration. */
+        size_t size /**< Data size to reserve. */
+        );
+
 /** Create an VoE handler to exchange vendor-specific data during realtime
  * operation.
  *
@@ -1738,7 +1989,9 @@ void ecrt_domain_state(
  * SDO request methods.
  ****************************************************************************/
 
-/** Set the SDO index and subindex.
+/** Set the SDO index and subindex and prepare for non-complete-access.
+ *
+ * This is valid even if the request was created for complete-access.
  *
  * \attention If the SDO index and/or subindex is changed while
  * ecrt_sdo_request_state() returns EC_REQUEST_BUSY, this may lead to
@@ -1748,6 +2001,18 @@ void ecrt_sdo_request_index(
         ec_sdo_request_t *req, /**< SDO request. */
         uint16_t index, /**< SDO index. */
         uint8_t subindex /**< SDO subindex. */
+        );
+
+/** Set the SDO index and prepare for complete-access.
+ *
+ * This is valid even if the request was not created for complete-access.
+ *
+ * \attention If the SDO index is changed while ecrt_sdo_request_state()
+ * returns EC_REQUEST_BUSY, this may lead to unexpected results.
+ */
+void ecrt_sdo_request_index_complete(
+        ec_sdo_request_t *req, /**< SDO request. */
+        uint16_t index /**< SDO index. */
         );
 
 /** Set the timeout for an SDO request.
@@ -1826,6 +2091,19 @@ void ecrt_sdo_request_write(
         ec_sdo_request_t *req /**< SDO request. */
         );
 
+/** Schedule an SDO write operation.
+ *
+ * \attention This method may not be called while ecrt_sdo_request_state()
+ * returns EC_REQUEST_BUSY.
+ *
+ * \attention The size must be less than or equal to the size specified
+ * when the request was created.
+ */
+void ecrt_sdo_request_write_with_size(
+        ec_sdo_request_t *req, /**< SDO request. */
+        size_t size /**< Size of data to write. */
+        );
+
 /** Schedule an SDO read operation.
  *
  * \attention This method may not be called while ecrt_sdo_request_state()
@@ -1837,6 +2115,139 @@ void ecrt_sdo_request_write(
  */
 void ecrt_sdo_request_read(
         ec_sdo_request_t *req /**< SDO request. */
+        );
+
+/*****************************************************************************
+ * FoE request methods.
+ ****************************************************************************/
+
+/** Select the filename to use for the next FoE operation.
+ */
+void ecrt_foe_request_file(
+        ec_foe_request_t *req, /**< FoE request. */
+        const char *file_name, /**< File name. */
+        uint32_t password /**< Password. */
+        );
+
+/** Set the timeout for an FoE request.
+ *
+ * If the request cannot be processed in the specified time, if will be marked
+ * as failed.
+ *
+ * The timeout is permanently stored in the request object and is valid until
+ * the next call of this method.
+ */
+void ecrt_foe_request_timeout(
+        ec_foe_request_t *req, /**< FoE request. */
+        uint32_t timeout /**< Timeout in milliseconds. Zero means no
+                           timeout. */
+        );
+
+/** Access to the FoE request's data.
+ *
+ * This function returns a pointer to the request's internal data memory.
+ *
+ * - After a read operation was successful, the data can be read from this
+ *   buffer up to the ecrt_foe_request_data_size().
+ * - If a write operation shall be triggered, the data has to be written to
+ *   the internal memory. Be sure that the data fit into the memory. The
+ *   memory size is a parameter of ecrt_slave_config_create_foe_request().
+ *
+ * \attention The return value can be invalid during a read operation, because
+ * the internal data memory could be re-allocated if the read data does not
+ * fit inside.
+ *
+ * \return Pointer to the internal file data memory.
+ */
+uint8_t *ecrt_foe_request_data(
+        ec_foe_request_t *req /**< FoE request. */
+        );
+
+/** Returns the current FoE data size.
+ *
+ * When the FoE request is created, the data size is set to the size of the
+ * reserved memory. After a read operation completes the size is set to the
+ * size of the read data. After a write operation starts the size is set to
+ * the size of the data to write.
+ *
+ * \return FoE data size in bytes.
+ */
+size_t ecrt_foe_request_data_size(
+        const ec_foe_request_t *req /**< FoE request. */
+        );
+
+/** Get the current state of the FoE request.
+ *
+ * \return Request state.
+ */
+#ifdef __KERNEL__
+ec_request_state_t ecrt_foe_request_state(
+        const ec_foe_request_t *req /**< FoE request. */
+    );
+#else
+ec_request_state_t ecrt_foe_request_state(
+        ec_foe_request_t *req /**< FoE request. */
+    );
+#endif
+
+/** Get the result of the FoE request.
+ *
+ * \attention This method may not be called while ecrt_foe_request_state()
+ * returns EC_REQUEST_BUSY.
+ *
+ * \return FoE transfer result.
+ */
+ec_foe_error_t ecrt_foe_request_result(
+        const ec_foe_request_t *req /**< FoE request. */
+    );
+
+/** Get the FoE error code from the FoE request.
+ *
+ * \attention This value is only valid when ecrt_foe_request_result()
+ * returns FOE_OPCODE_ERROR.
+ *
+ * \return FoE error code.  If the returned value is zero, then the error
+ * is that an unexpected opcode was received; if it is non-zero then the
+ * value is the code reported by the slave in the FoE ERROR opcode.
+ */
+uint32_t ecrt_foe_request_error_code(
+        const ec_foe_request_t *req /**< FoE request. */
+    );
+
+/** Returns the progress of the current @EC_REQUEST_BUSY transfer.
+ *
+ * \attention Must be called after ecrt_foe_request_state().
+ *
+ * \return Progress in bytes.
+ */
+size_t ecrt_foe_request_progress(
+        const ec_foe_request_t *req /**< FoE request. */
+        );
+
+/** Schedule an FoE write operation.
+ *
+ * \attention This method may not be called while ecrt_foe_request_state()
+ * returns EC_REQUEST_BUSY.
+ *
+ * \attention The size must be less than or equal to the size specified
+ * when the request was created.
+ */
+void ecrt_foe_request_write(
+        ec_foe_request_t *req, /**< FoE request. */
+        size_t size /**< Size of data to write. */
+        );
+
+/** Schedule an FoE read operation.
+ *
+ * \attention This method may not be called while ecrt_foe_request_state()
+ * returns EC_REQUEST_BUSY.
+ *
+ * \attention After calling this function, the return value of
+ * ecrt_foe_request_data() must be considered as invalid while
+ * ecrt_foe_request_state() returns EC_REQUEST_BUSY.
+ */
+void ecrt_foe_request_read(
+        ec_foe_request_t *req /**< FoE request. */
         );
 
 /*****************************************************************************
@@ -2326,6 +2737,20 @@ void ecrt_write_lreal(void *data, double value);
 #define EC_WRITE_LREAL(DATA, VAL) ecrt_write_lreal(DATA, VAL)
 
 #endif // ifndef __KERNEL__
+
+/** Schedule a register read-write operation.
+ *
+ * \attention This method may not be called while ecrt_reg_request_state()
+ * returns EC_REQUEST_BUSY.
+ *
+ * \attention The \a size parameter is truncated to the size given at request
+ * creation.
+ */
+void ecrt_reg_request_readwrite(
+        ec_reg_request_t *req, /**< Register request. */
+        uint16_t address, /**< Register address. */
+        size_t size /**< Size to read-write. */
+        );
 
 /*****************************************************************************/
 

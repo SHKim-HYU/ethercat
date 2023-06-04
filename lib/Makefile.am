@@ -36,6 +36,7 @@ libethercat_la_SOURCES = \
 	common.c \
 	domain.c \
 	master.c \
+	foe_request.c \
 	reg_request.c \
 	sdo_request.c \
 	slave_config.c \
@@ -45,6 +46,7 @@ noinst_HEADERS = \
 	domain.h \
 	ioctl.h \
 	master.h \
+	foe_request.h \
 	reg_request.h \
 	sdo_request.h \
 	slave_config.h \
@@ -73,17 +75,6 @@ libethercat_la_CFLAGS = -fno-strict-aliasing -Wall -I$(top_srcdir)
 #
 libethercat_la_LDFLAGS = -version-info 2:0:1
 
-pkgconfig_DATA = libethercat.pc
-
-cmakedir = $(libdir)/cmake
-
-cmake_DATA = EtherCATConfig.cmake
-
-EXTRA_DIST = EtherCATConfig.cmake.in
-
-CLEANFILES = $(cmake_DATA)
-
-
 #------------------------------------------------------------------------------
 
 if ENABLE_RTDM
@@ -91,12 +82,20 @@ if ENABLE_RTDM
 lib_LTLIBRARIES += libethercat_rtdm.la
 
 libethercat_rtdm_la_SOURCES = $(libethercat_la_SOURCES)
-libethercat_rtdm_la_CFLAGS = $(libethercat_la_CFLAGS) -DUSE_RTDM
+libethercat_rtdm_la_CFLAGS = $(libethercat_la_CFLAGS)
 libethercat_rtdm_la_LDFLAGS = $(libethercat_la_LDFLAGS)
 
 if ENABLE_XENOMAI
 libethercat_rtdm_la_CFLAGS += $(XENOMAI_RTDM_CFLAGS)
 libethercat_rtdm_la_LDFLAGS += $(XENOMAI_RTDM_LDFLAGS)
+endif
+
+if ENABLE_XENOMAI_V3
+libethercat_rtdm_la_CFLAGS += $(XENOMAI_RTDM_CFLAGS)
+libethercat_rtdm_la_LDFLAGS += $(XENOMAI_RTDM_LDFLAGS)
+libethercat_rtdm_la_CFLAGS += -DUSE_RTDM_XENOMAI_V3
+else
+libethercat_rtdm_la_CFLAGS += -DUSE_RTDM
 endif
 
 if ENABLE_RTAI
@@ -107,8 +106,3 @@ endif
 endif
 
 #------------------------------------------------------------------------------
-
-# we need to replace the variables manually, because autotools does not expand them.
-
-EtherCATConfig.cmake: $(srcdir)/EtherCATConfig.cmake.in Makefile
-	$(SED) -e 's,%libdir%,$(libdir),' -e 's,%includedir%,$(includedir),' $< > $@

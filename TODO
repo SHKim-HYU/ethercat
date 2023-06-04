@@ -23,7 +23,6 @@ Future issues:
 * recompile tool/CommandVersion.cpp if revision changes.
 * Log SoE IDNs with real name ([SP]-x-yyyy).
 * Only output watchdog config if not default.
-* Implement CompleteAccess for SDO uploads.
 * Output warning when send_ext() is called in illegal context.
 * Implement ecrt_slave_config_request_state().
 * Remove default buffer size in SDO upload.
@@ -60,10 +59,6 @@ Future issues:
     - Implement reading from stream for soe_write.
     - Output error after usage.
 * Fix bus scan hang when calling ecrt_master_deactivate().
-
-Documentation
-
-* Update FSM graphs.
 
 Smaller issues:
 

@@ -64,10 +64,31 @@ void ecrt_sdo_request_index(ec_sdo_request_t *req, uint16_t index,
     data.request_index = req->index;
     data.sdo_index = index;
     data.sdo_subindex = subindex;
+    data.complete_access = 0;
 
     ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_INDEX, &data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to set SDO request index/subindex: %s\n",
+        EC_PRINT_ERR("Failed to set SDO request index/subindex: %s\n",
+                strerror(EC_IOCTL_ERRNO(ret)));
+    }
+}
+
+/*****************************************************************************/
+
+void ecrt_sdo_request_index_complete(ec_sdo_request_t *req, uint16_t index)
+{
+    ec_ioctl_sdo_request_t data;
+    int ret;
+
+    data.config_index = req->config->index;
+    data.request_index = req->index;
+    data.sdo_index = index;
+    data.sdo_subindex = 0;
+    data.complete_access = 1;
+
+    ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_INDEX, &data);
+    if (EC_IOCTL_IS_ERROR(ret)) {
+        EC_PRINT_ERR("Failed to set SDO request index: %s\n",
                 strerror(EC_IOCTL_ERRNO(ret)));
     }
 }
@@ -85,7 +106,7 @@ void ecrt_sdo_request_timeout(ec_sdo_request_t *req, uint32_t timeout)
 
     ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_TIMEOUT, &data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to set SDO request timeout: %s\n",
+        EC_PRINT_ERR("Failed to set SDO request timeout: %s\n",
                 strerror(EC_IOCTL_ERRNO(ret)));
     }
 }
@@ -116,14 +137,14 @@ ec_request_state_t ecrt_sdo_request_state(ec_sdo_request_t *req)
 
     ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_STATE, &data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to get SDO request state: %s\n",
+        EC_PRINT_ERR("Failed to get SDO request state: %s\n",
                 strerror(EC_IOCTL_ERRNO(ret)));
         return EC_REQUEST_ERROR;
     }
 
     if (data.size) { // new data waiting to be copied
         if (req->mem_size < data.size) {
-            fprintf(stderr, "Received %zu bytes do not fit info SDO data"
+            EC_PRINT_ERR("Received %zu bytes do not fit info SDO data"
                     " memory (%zu bytes)!\n", data.size, req->mem_size);
             return EC_REQUEST_ERROR;
         }
@@ -133,7 +154,7 @@ ec_request_state_t ecrt_sdo_request_state(ec_sdo_request_t *req)
         ret = ioctl(req->config->master->fd,
                 EC_IOCTL_SDO_REQUEST_DATA, &data);
         if (EC_IOCTL_IS_ERROR(ret)) {
-            fprintf(stderr, "Failed to get SDO data: %s\n",
+            EC_PRINT_ERR("Failed to get SDO data: %s\n",
                     strerror(EC_IOCTL_ERRNO(ret)));
             return EC_REQUEST_ERROR;
         }
@@ -155,7 +176,7 @@ void ecrt_sdo_request_read(ec_sdo_request_t *req)
 
     ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_READ, &data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to command an SDO read operation : %s\n",
+        EC_PRINT_ERR("Failed to command an SDO read operation : %s\n",
                 strerror(EC_IOCTL_ERRNO(ret)));
     }
 }
@@ -174,7 +195,26 @@ void ecrt_sdo_request_write(ec_sdo_request_t *req)
 
     ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_WRITE, &data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to command an SDO write operation : %s\n",
+        EC_PRINT_ERR("Failed to command an SDO write operation : %s\n",
+                strerror(EC_IOCTL_ERRNO(ret)));
+    }
+}
+
+/*****************************************************************************/
+
+void ecrt_sdo_request_write_with_size(ec_sdo_request_t *req, size_t size)
+{
+    ec_ioctl_sdo_request_t data;
+    int ret;
+
+    data.config_index = req->config->index;
+    data.request_index = req->index;
+    data.data = req->data;
+    data.size = size;
+
+    ret = ioctl(req->config->master->fd, EC_IOCTL_SDO_REQUEST_WRITE, &data);
+    if (EC_IOCTL_IS_ERROR(ret)) {
+        EC_PRINT_ERR("Failed to command an SDO write operation : %s\n",
                 strerror(EC_IOCTL_ERRNO(ret)));
     }
 }
