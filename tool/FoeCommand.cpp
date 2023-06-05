@@ -28,7 +28,6 @@
  ****************************************************************************/
 
 #include "FoeCommand.h"
-#include "foe.h"
 
 /*****************************************************************************/
 
@@ -74,6 +73,8 @@ std::string FoeCommand::resultText(int result)
             return "FOE_READ_NODATA_ERROR";
         case FOE_MBOX_PROT_ERROR:
             return "FOE_MBOX_PROT_ERROR";
+        case FOE_READ_OVER_ERROR:
+            return "FOE_READ_OVER_ERROR";
         default:
             return "???";
     }

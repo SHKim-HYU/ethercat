@@ -38,6 +38,7 @@
 #define __EC_DEVICE_H__
 
 #include <linux/interrupt.h>
+#include <linux/version.h>
 
 #include "../devices/ecdev.h"
 #include "globals.h"
@@ -48,11 +49,19 @@
  * different memory regions, because otherwise the network device DMA could
  * send the same data twice, if it is called twice.
  */
-#define EC_TX_RING_SIZE 2
+#define EC_TX_RING_SIZE 0x10
 
 #ifdef EC_DEBUG_IF
 #include "debug.h"
 #endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+struct timeval {
+	__kernel_old_time_t	tv_sec;		/* seconds */
+	__kernel_suseconds_t	tv_usec;	/* microseconds */
+};
+#endif
+
 
 #ifdef EC_DEBUG_RING
 #define EC_DEBUG_RING_SIZE 10
@@ -91,7 +100,7 @@ struct ec_device
 #ifdef EC_HAVE_CYCLES
     cycles_t cycles_poll; /**< cycles of last poll */
 #endif
-#ifdef EC_DEBUG_RING
+#if defined(EC_DEBUG_RING) || !defined(EC_RTDM)
     struct timeval timeval_poll;
 #endif
     unsigned long jiffies_poll; /**< jiffies of last poll */
@@ -128,6 +137,35 @@ struct ec_device
     unsigned int debug_frame_count;
 #endif
 };
+
+/*****************************************************************************/
+
+/**
+   pcap global header
+*/
+
+typedef struct {
+    u32 magic_number;   /* magic number */
+    u16 version_major;  /* major version number */
+    u16 version_minor;  /* minor version number */
+    s32 thiszone;       /* GMT to local correction */
+    u32 sigfigs;        /* accuracy of timestamps */
+    u32 snaplen;        /* max length of captured packets, in octets */
+    u32 network;        /* data link type */
+} pcap_hdr_t;
+
+/*****************************************************************************/
+
+/**
+   pcap packet header
+*/
+
+typedef struct {
+    u32 ts_sec;         /* timestamp seconds */
+    u32 ts_usec;        /* timestamp microseconds */
+    u32 incl_len;       /* number of octets of packet saved in file */
+    u32 orig_len;       /* actual length of packet */
+} pcaprec_hdr_t;
 
 /*****************************************************************************/
 

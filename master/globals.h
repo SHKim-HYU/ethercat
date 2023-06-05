@@ -58,9 +58,8 @@
 /** Number of state machine retries on datagram timeout. */
 #define EC_FSM_RETRIES 3
 
-/** Seconds to wait before fetching SDO dictionary
-    after slave entered PREOP state. */
-#define EC_WAIT_SDO_DICT 3
+/** If set, skip fetching SDO dictionary during slave scan. */
+#define EC_SKIP_SDO_DICT 1
 
 /** Minimum size of a buffer used with ec_state_string(). */
 #define EC_STATE_STRING_SIZE 32
@@ -88,14 +87,41 @@
 #define EC_ADDR_LEN 4
 
 /** Resulting maximum data size of a single datagram in a frame. */
+#ifdef DEBUG_DATAGRAM_OVERFLOW
+// Define a runt datagram which can be easily overflowed on 
+// available hardware for use when testing ec_domain_finish()
+#define EC_MAX_DATA_SIZE (128)
+#else
 #define EC_MAX_DATA_SIZE (ETH_DATA_LEN - EC_FRAME_HEADER_SIZE \
                           - EC_DATAGRAM_HEADER_SIZE - EC_DATAGRAM_FOOTER_SIZE)
+#endif // DEBUG_DATAGRAM_OVERFLOW
 
 /** Mailbox header size.  */
 #define EC_MBOX_HEADER_SIZE 6
 
+/** CoE header size.  */
+#define EC_COE_HEADER_SIZE 2
+
+/** Mailbox Gateway, Mailbox header slave address offset */
+#define EC_MBG_SLAVE_ADDR_OFFSET 1000
+
 /** Word offset of first SII category. */
 #define EC_FIRST_SII_CATEGORY_OFFSET 0x40
+
+/** Word offset of SII alias. */
+#define EC_ALIAS_SII_OFFSET 0x04
+
+/** Word offset of SII vendor ID. */
+#define EC_VENDOR_SII_OFFSET 0x08
+
+/** Word offset of SII product number. */
+#define EC_PRODUCT_SII_OFFSET 0x0A
+
+/** Word offset of SII revision number. */
+#define EC_REVISION_SII_OFFSET 0x0C
+
+/** Word offset of SII serial number. */
+#define EC_SERIAL_SII_OFFSET 0x0E
 
 /** Size of a sync manager configuration page. */
 #define EC_SYNC_PAGE_SIZE 8
@@ -114,6 +140,12 @@
  * This is also used as the maximum lenth of EoE device names.
  **/
 #define EC_DATAGRAM_NAME_SIZE 20
+
+/** Maximum hostname size.
+ *
+ * Used inside the EoE set IP parameter request.
+ */
+#define EC_MAX_HOSTNAME_SIZE 32
 
 /** Slave state mask.
  *
@@ -142,6 +174,9 @@ typedef enum {
 } ec_slave_state_t;
 
 /** Supported mailbox protocols.
+ *
+ * Not to mix up with the mailbox type field in the mailbox header defined in
+ * master/mailbox.h.
  */
 enum {
     EC_MBOX_AOE = 0x01, /**< ADS over EtherCAT */
@@ -263,7 +298,7 @@ unsigned int ec_master_count(void);
 void ec_print_data(const uint8_t *, size_t);
 void ec_print_data_diff(const uint8_t *, const uint8_t *, size_t);
 size_t ec_state_string(uint8_t, char *, uint8_t);
-ssize_t ec_mac_print(const uint8_t *, char *);
+size_t ec_mac_print(const uint8_t *, char *);
 int ec_mac_is_zero(const uint8_t *);
 
 ec_master_t *ecrt_request_master_err(unsigned int);

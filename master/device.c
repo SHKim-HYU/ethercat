@@ -38,6 +38,7 @@
 #include <linux/skbuff.h>
 #include <linux/if_ether.h>
 #include <linux/netdevice.h>
+#include <linux/jiffies.h>
 
 #include "device.h"
 #include "master.h"
@@ -305,6 +306,49 @@ int ec_device_close(
 
 /*****************************************************************************/
 
+/** Records a packet in the master's pcap buffer, if there is room.
+ */
+
+static void pcap_record(
+            ec_device_t *device, /**< EtherCAT device */
+            const void *data, /**< Packet data */
+            size_t size /**< Packet size */
+            )
+{
+    // check there's enough room to copy frame to pcap mem
+    if (unlikely(device->master->pcap_data)) {
+        // get current data pointer
+        void *curr_data = device->master->pcap_curr_data;
+        long available = pcap_size - (curr_data - device->master->pcap_data);
+        long reqd = size + sizeof(pcaprec_hdr_t);
+        if (unlikely(reqd <= available)) {
+            pcaprec_hdr_t *pcaphdr;
+            struct timeval t;
+          
+            // update curr data pointer
+            device->master->pcap_curr_data = curr_data + reqd;
+            
+            // fill in pcap frame header info
+            pcaphdr = curr_data;
+#ifdef EC_RTDM
+            jiffies_to_timeval(device->jiffies_poll, &t);
+#else
+            t = device->timeval_poll;
+#endif
+            pcaphdr->ts_sec   = t.tv_sec;
+            pcaphdr->ts_usec  = t.tv_usec;
+            pcaphdr->incl_len = size;
+            pcaphdr->orig_len = size;
+            curr_data += sizeof(pcaprec_hdr_t);
+          
+            // copy frame
+            memcpy(curr_data, data, size);
+        }
+    }
+}
+
+/*****************************************************************************/
+
 /** Returns a pointer to the device's transmit memory.
  *
  * \return pointer to the TX socket buffer
@@ -355,6 +399,7 @@ void ec_device_send(
         device->master->device_stats.tx_count++;
         device->tx_bytes += ETH_HLEN + size;
         device->master->device_stats.tx_bytes += ETH_HLEN + size;
+        pcap_record(device, skb->data, ETH_HLEN + size);
 #ifdef EC_DEBUG_IF
         ec_debug_send(&device->dbg, skb->data, ETH_HLEN + size);
 #endif
@@ -395,6 +440,19 @@ void ec_device_clear_stats(
         device->rx_byte_rates[i] = 0;
     }
 }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+
+static void do_gettimeofday(struct timeval *tv)
+{
+	struct timespec64 ts;
+
+	ktime_get_ts64(&ts);
+	tv->tv_sec = ts.tv_sec;
+	tv->tv_usec = ts.tv_nsec / NSEC_PER_USEC;
+}
+
+#endif
 
 /*****************************************************************************/
 
@@ -485,6 +543,9 @@ void ec_device_poll(
     device->jiffies_poll = jiffies;
 #ifdef EC_DEBUG_RING
     do_gettimeofday(&device->timeval_poll);
+#elif !defined(EC_RTDM)
+    if (pcap_size)
+        do_gettimeofday(&device->timeval_poll);
 #endif
     device->poll(device->dev);
 }
@@ -559,9 +620,9 @@ void ecdev_withdraw(ec_device_t *device /**< EtherCAT device */)
 
     EC_MASTER_INFO(master, "Releasing %s device %s.\n", dev_str, mac_str);
 
-    down(&master->device_sem);
+    ec_lock_down(&master->device_sem);
     ec_device_detach(device);
-    up(&master->device_sem);
+    ec_lock_up(&master->device_sem);
 }
 
 /*****************************************************************************/
@@ -658,6 +719,7 @@ void ecdev_receive(
         ec_print_data(data, size);
     }
 
+    pcap_record(device, data, size);
 #ifdef EC_DEBUG_IF
     ec_debug_send(&device->dbg, data, size);
 #endif

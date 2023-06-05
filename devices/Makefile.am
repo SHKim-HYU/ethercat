@@ -26,10 +26,17 @@
 #  industrial property and similar rights of Beckhoff Automation GmbH.
 #
 #------------------------------------------------------------------------------
-include $(top_srcdir)/Makefile.kbuild
 
 SUBDIRS = \
 	ccat \
+	cx2100 \
+	e1000 \
+	e1000e \
+	igb
+
+DIST_SUBDIRS = \
+	ccat \
+	cx2100 \
 	e1000 \
 	e1000e \
 	igb
@@ -84,6 +91,8 @@ noinst_HEADERS = \
 	8139too-3.14-orig.c \
 	8139too-3.16-ethercat.c \
 	8139too-3.16-orig.c \
+	8139too-3.18-ethercat.c \
+	8139too-3.18-orig.c \
 	8139too-3.2-ethercat.c \
 	8139too-3.2-orig.c \
 	8139too-3.4-ethercat.c \
@@ -92,8 +101,16 @@ noinst_HEADERS = \
 	8139too-3.6-orig.c \
 	8139too-3.8-ethercat.c \
 	8139too-3.8-orig.c \
+	8139too-4.1-ethercat.c \
+	8139too-4.1-orig.c \
 	8139too-4.4-ethercat.c \
 	8139too-4.4-orig.c \
+	8139too-4.9-ethercat.c \
+	8139too-4.9-orig.c \
+	8139too-4.14-ethercat.c \
+	8139too-4.14-orig.c \
+	8139too-4.19-ethercat.c \
+	8139too-4.19-orig.c \
 	e100-2.6.20-ethercat.c \
 	e100-2.6.20-orig.c \
 	e100-2.6.24-ethercat.c \
@@ -126,16 +143,32 @@ noinst_HEADERS = \
 	e100-3.14-orig.c \
 	e100-3.16-ethercat.c \
 	e100-3.16-orig.c \
+	e100-3.18-ethercat.c \
+	e100-3.18-orig.c \
 	e100-3.4-ethercat.c \
 	e100-3.4-orig.c \
 	e100-3.6-ethercat.c \
 	e100-3.6-orig.c \
 	e100-3.8-ethercat.c \
 	e100-3.8-orig.c \
+	e100-4.1-ethercat.c \
+	e100-4.1-orig.c \
 	e100-4.4-ethercat.c \
 	e100-4.4-orig.c \
+	e100-4.9-ethercat.c \
+	e100-4.9-orig.c \
+	e100-4.14-ethercat.c \
+	e100-4.14-orig.c \
+	e100-4.19-ethercat.c \
+	e100-4.19-orig.c \
 	ecdev.h \
 	generic.c \
+	r8152-3.18-ethercat.c \
+	r8152-3.18-orig.c \
+	r8152-4.4-ethercat.c \
+	r8152-4.4-orig.c \
+	r8152-4.9-ethercat.c \
+	r8152-4.9-orig.c \
 	r8169-2.6.24-ethercat.c \
 	r8169-2.6.24-orig.c \
 	r8169-2.6.27-ethercat.c \
@@ -164,6 +197,8 @@ noinst_HEADERS = \
 	r8169-3.14-orig.c \
 	r8169-3.16-ethercat.c \
 	r8169-3.16-orig.c \
+	r8169-3.18-ethercat.c \
+	r8169-3.18-orig.c \
 	r8169-3.2-ethercat.c \
 	r8169-3.2-orig.c \
 	r8169-3.4-ethercat.c \
@@ -172,7 +207,29 @@ noinst_HEADERS = \
 	r8169-3.6-orig.c \
 	r8169-3.8-ethercat.c \
 	r8169-3.8-orig.c \
+	r8169-4.1-ethercat.c \
+	r8169-4.1-orig.c \
 	r8169-4.4-ethercat.c \
-	r8169-4.4-orig.c
+	r8169-4.4-orig.c \
+	r8169-4.9-ethercat.c \
+	r8169-4.9-orig.c \
+	r8169-4.14-ethercat.c \
+	r8169-4.14-orig.c
+
+EXTRA_DIST = \
+	Kbuild.in
+
+BUILT_SOURCES = \
+	Kbuild
+
+modules:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" modules
+
+modules_install:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" \
+		INSTALL_MOD_DIR="$(INSTALL_MOD_DIR)" modules_install
+
+clean-local:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" clean
 
 #------------------------------------------------------------------------------

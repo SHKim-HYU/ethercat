@@ -1046,7 +1046,6 @@ static bool e1000_clean_rx_irq(struct e1000_ring *rx_ring, int *work_done,
 
 		if (adapter->ecdev) {
 			ecdev_receive(adapter->ecdev, skb->data, length);
-			adapter->ec_watchdog_jiffies = jiffies;
 		} else {
 		    e1000_receive_skb(adapter, netdev, skb, staterr,
 				      rx_desc->wb.upper.vlan);
@@ -1489,7 +1488,6 @@ copydone:
 
 		if (adapter->ecdev) {
 			ecdev_receive(adapter->ecdev, skb->data, length);
-			adapter->ec_watchdog_jiffies = jiffies;
 		} else {
 			e1000_receive_skb(adapter, netdev, skb, staterr,
 					rx_desc->wb.middle.vlan);
@@ -1680,7 +1678,6 @@ static bool e1000_clean_jumbo_rx_irq(struct e1000_ring *rx_ring, int *work_done,
 
 		if (adapter->ecdev) {
 			ecdev_receive(adapter->ecdev, skb->data, length);
-			adapter->ec_watchdog_jiffies = jiffies;
 		} else {
 			e1000_receive_skb(adapter, netdev, skb, staterr,
 					  rx_desc->wb.upper.vlan);
@@ -4303,7 +4300,12 @@ void e1000e_down(struct e1000_adapter *adapter, bool reset)
 	 */
 	set_bit(__E1000_DOWN, &adapter->state);
 
-	netif_carrier_off(netdev);
+	if (adapter->ecdev) {
+		ecdev_set_link(adapter->ecdev, 0);
+	}
+	else {
+		netif_carrier_off(netdev);
+	}
 
 	/* disable receives in the hardware */
 	rctl = er32(RCTL);
@@ -4323,10 +4325,7 @@ void e1000e_down(struct e1000_adapter *adapter, bool reset)
 	e1e_flush();
 	usleep_range(10000, 20000);
 
-	if (adapter->ecdev) {
-		ecdev_set_link(adapter->ecdev, 0);
-	}
-	else {
+	if (!adapter->ecdev) {
 		e1000_irq_disable(adapter);
 
 		napi_synchronize(&adapter->napi);
@@ -5381,7 +5380,7 @@ link_up:
 	 * if there is queued Tx work it cannot be done.  So
 	 * reset the controller to flush the Tx packet buffers.
 	 */
-	if (!netif_carrier_ok(netdev) &&
+	if (!adapter->ecdev && !netif_carrier_ok(netdev) &&
 	    (e1000_desc_unused(tx_ring) + 1 < tx_ring->count))
 		adapter->flags |= FLAG_RESTART_NOW;
 
@@ -5945,21 +5944,21 @@ static netdev_tx_t e1000_xmit_frame(struct sk_buff *skb,
 					(MAX_SKB_FRAGS *
 					 DIV_ROUND_UP(PAGE_SIZE,
 						 adapter->tx_fifo_limit) + 2));
+		}
 
-			if (!skb->xmit_more ||
-					netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
-				if (adapter->flags2 & FLAG2_PCIM2PCI_ARBITER_WA)
-					e1000e_update_tdt_wa(tx_ring,
-							tx_ring->next_to_use);
-				else
-					writel(tx_ring->next_to_use, tx_ring->tail);
+		if (!skb->xmit_more ||
+				netif_xmit_stopped(netdev_get_tx_queue(netdev, 0))) {
+			if (adapter->flags2 & FLAG2_PCIM2PCI_ARBITER_WA)
+				e1000e_update_tdt_wa(tx_ring,
+						tx_ring->next_to_use);
+			else
+				writel(tx_ring->next_to_use, tx_ring->tail);
 
-				/* we need this if more than one processor can write
-				 * to our tail at a time, it synchronizes IO on
-				 *IA64/Altix systems
-				 */
-				mmiowb();
-			}
+			/* we need this if more than one processor can write
+			 * to our tail at a time, it synchronizes IO on
+			 *IA64/Altix systems
+			 */
+			mmiowb();
 		}
 	} else {
 		if (!adapter->ecdev) {
@@ -7103,7 +7102,7 @@ void ec_poll(struct net_device *netdev)
 	if (jiffies - adapter->ec_watchdog_jiffies >= 2 * HZ) {
 		struct e1000_hw *hw = &adapter->hw;
 		hw->mac.get_link_status = true;
-		e1000_watchdog_task(&adapter->watchdog_task);
+		e1000_watchdog((unsigned long) adapter);
 		adapter->ec_watchdog_jiffies = jiffies;
 	}
 

@@ -26,9 +26,9 @@
 #  industrial property and similar rights of Beckhoff Automation GmbH.
 #
 #------------------------------------------------------------------------------
-include $(top_srcdir)/Makefile.kbuild
 
 EXTRA_DIST = \
+	Kbuild.in \
 	LICENSE \
 	e1000-2.6.13-ethercat.h \
 	e1000-2.6.13-orig.h \
@@ -68,14 +68,24 @@ EXTRA_DIST = \
 	e1000-3.14-orig.h \
 	e1000-3.16-ethercat.h \
 	e1000-3.16-orig.h \
+	e1000-3.18-ethercat.h \
+	e1000-3.18-orig.h \
 	e1000-3.4-ethercat.h \
 	e1000-3.4-orig.h \
 	e1000-3.6-ethercat.h \
 	e1000-3.6-orig.h \
 	e1000-3.8-ethercat.h \
 	e1000-3.8-orig.h \
+	e1000-4.1-ethercat.h \
+	e1000-4.1-orig.h \
 	e1000-4.4-ethercat.h \
 	e1000-4.4-orig.h \
+	e1000-4.9-ethercat.h \
+	e1000-4.9-orig.h \
+	e1000-4.14-ethercat.h \
+	e1000-4.14-orig.h \
+	e1000-4.19-ethercat.h \
+	e1000-4.19-orig.h \
 	e1000_ethtool-2.6.13-ethercat.c \
 	e1000_ethtool-2.6.13-orig.c \
 	e1000_ethtool-2.6.18-ethercat.c \
@@ -114,14 +124,24 @@ EXTRA_DIST = \
 	e1000_ethtool-3.14-orig.c \
 	e1000_ethtool-3.16-ethercat.c \
 	e1000_ethtool-3.16-orig.c \
+	e1000_ethtool-3.18-ethercat.c \
+	e1000_ethtool-3.18-orig.c \
 	e1000_ethtool-3.4-ethercat.c \
 	e1000_ethtool-3.4-orig.c \
 	e1000_ethtool-3.6-ethercat.c \
 	e1000_ethtool-3.6-orig.c \
 	e1000_ethtool-3.8-ethercat.c \
 	e1000_ethtool-3.8-orig.c \
+	e1000_ethtool-4.1-ethercat.c \
+	e1000_ethtool-4.1-orig.c \
 	e1000_ethtool-4.4-ethercat.c \
 	e1000_ethtool-4.4-orig.c \
+	e1000_ethtool-4.9-ethercat.c \
+	e1000_ethtool-4.9-orig.c \
+	e1000_ethtool-4.14-ethercat.c \
+	e1000_ethtool-4.14-orig.c \
+	e1000_ethtool-4.19-ethercat.c \
+	e1000_ethtool-4.19-orig.c \
 	e1000_hw-2.6.13-ethercat.c \
 	e1000_hw-2.6.13-ethercat.h \
 	e1000_hw-2.6.13-orig.c \
@@ -198,6 +218,10 @@ EXTRA_DIST = \
 	e1000_hw-3.16-ethercat.h \
 	e1000_hw-3.16-orig.c \
 	e1000_hw-3.16-orig.h \
+	e1000_hw-3.18-ethercat.c \
+	e1000_hw-3.18-ethercat.h \
+	e1000_hw-3.18-orig.c \
+	e1000_hw-3.18-orig.h \
 	e1000_hw-3.4-ethercat.c \
 	e1000_hw-3.4-ethercat.h \
 	e1000_hw-3.4-orig.c \
@@ -210,10 +234,26 @@ EXTRA_DIST = \
 	e1000_hw-3.8-ethercat.h \
 	e1000_hw-3.8-orig.c \
 	e1000_hw-3.8-orig.h \
+	e1000_hw-4.1-ethercat.c \
+	e1000_hw-4.1-ethercat.h \
+	e1000_hw-4.1-orig.c \
+	e1000_hw-4.1-orig.h \
 	e1000_hw-4.4-ethercat.c \
 	e1000_hw-4.4-ethercat.h \
 	e1000_hw-4.4-orig.c \
 	e1000_hw-4.4-orig.h \
+	e1000_hw-4.9-ethercat.c \
+	e1000_hw-4.9-ethercat.h \
+	e1000_hw-4.9-orig.c \
+	e1000_hw-4.9-orig.h \
+	e1000_hw-4.14-ethercat.c \
+	e1000_hw-4.14-ethercat.h \
+	e1000_hw-4.14-orig.c \
+	e1000_hw-4.14-orig.h \
+	e1000_hw-4.19-ethercat.c \
+	e1000_hw-4.19-ethercat.h \
+	e1000_hw-4.19-orig.c \
+	e1000_hw-4.19-orig.h \
 	e1000_main-2.6.13-ethercat.c \
 	e1000_main-2.6.13-orig.c \
 	e1000_main-2.6.18-ethercat.c \
@@ -252,14 +292,24 @@ EXTRA_DIST = \
 	e1000_main-3.14-orig.c \
 	e1000_main-3.16-ethercat.c \
 	e1000_main-3.16-orig.c \
+	e1000_main-3.18-ethercat.c \
+	e1000_main-3.18-orig.c \
 	e1000_main-3.4-ethercat.c \
 	e1000_main-3.4-orig.c \
 	e1000_main-3.6-ethercat.c \
 	e1000_main-3.6-orig.c \
 	e1000_main-3.8-ethercat.c \
 	e1000_main-3.8-orig.c \
+	e1000_main-4.1-ethercat.c \
+	e1000_main-4.1-orig.c \
 	e1000_main-4.4-ethercat.c \
 	e1000_main-4.4-orig.c \
+	e1000_main-4.9-ethercat.c \
+	e1000_main-4.9-orig.c \
+	e1000_main-4.14-ethercat.c \
+	e1000_main-4.14-orig.c \
+	e1000_main-4.19-ethercat.c \
+	e1000_main-4.19-orig.c \
 	e1000_osdep-2.6.13-ethercat.h \
 	e1000_osdep-2.6.13-orig.h \
 	e1000_osdep-2.6.18-ethercat.h \
@@ -298,14 +348,24 @@ EXTRA_DIST = \
 	e1000_osdep-3.14-orig.h \
 	e1000_osdep-3.16-ethercat.h \
 	e1000_osdep-3.16-orig.h \
+	e1000_osdep-3.18-ethercat.h \
+	e1000_osdep-3.18-orig.h \
 	e1000_osdep-3.4-ethercat.h \
 	e1000_osdep-3.4-orig.h \
 	e1000_osdep-3.6-ethercat.h \
 	e1000_osdep-3.6-orig.h \
 	e1000_osdep-3.8-ethercat.h \
 	e1000_osdep-3.8-orig.h \
+	e1000_osdep-4.1-ethercat.h \
+	e1000_osdep-4.1-orig.h \
 	e1000_osdep-4.4-ethercat.h \
 	e1000_osdep-4.4-orig.h \
+	e1000_osdep-4.9-ethercat.h \
+	e1000_osdep-4.9-orig.h \
+	e1000_osdep-4.14-ethercat.h \
+	e1000_osdep-4.14-orig.h \
+	e1000_osdep-4.19-ethercat.h \
+	e1000_osdep-4.19-orig.h \
 	e1000_param-2.6.13-ethercat.c \
 	e1000_param-2.6.13-orig.c \
 	e1000_param-2.6.18-ethercat.c \
@@ -344,13 +404,37 @@ EXTRA_DIST = \
 	e1000_param-3.14-orig.c \
 	e1000_param-3.16-ethercat.c \
 	e1000_param-3.16-orig.c \
+	e1000_param-3.18-ethercat.c \
+	e1000_param-3.18-orig.c \
 	e1000_param-3.4-ethercat.c \
 	e1000_param-3.4-orig.c \
 	e1000_param-3.6-ethercat.c \
 	e1000_param-3.6-orig.c \
 	e1000_param-3.8-ethercat.c \
 	e1000_param-3.8-orig.c \
+	e1000_param-4.1-ethercat.c \
+	e1000_param-4.1-orig.c \
 	e1000_param-4.4-ethercat.c \
-	e1000_param-4.4-orig.c
+	e1000_param-4.4-orig.c \
+	e1000_param-4.9-ethercat.c \
+	e1000_param-4.9-orig.c \
+	e1000_param-4.14-ethercat.c \
+	e1000_param-4.14-orig.c \
+	e1000_param-4.19-ethercat.c \
+	e1000_param-4.19-orig.c
+
+
+BUILT_SOURCES = \
+	Kbuild
+
+modules:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" modules
+
+modules_install:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" \
+		INSTALL_MOD_DIR="$(INSTALL_MOD_DIR)" modules_install
+
+clean-local:
+	$(MAKE) -C "$(LINUX_SOURCE_DIR)" M="@abs_srcdir@" clean
 
 #------------------------------------------------------------------------------

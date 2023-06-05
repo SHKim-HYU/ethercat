@@ -41,9 +41,18 @@
 #include "datagram.h"
 #include "sdo_request.h"
 #include "reg_request.h"
+#include "eoe_request.h"
+#include "mbox_gateway_request.h"
+#include "dict_request.h"
 #include "fsm_coe.h"
 #include "fsm_foe.h"
 #include "fsm_soe.h"
+#ifdef EC_EOE
+#include "fsm_eoe.h"
+#endif
+#include "fsm_mbox_gateway.h"
+#include "fsm_slave_config.h"
+#include "fsm_slave_scan.h"
 
 /*****************************************************************************/
 
@@ -54,6 +63,7 @@ typedef struct ec_fsm_slave ec_fsm_slave_t; /**< \see ec_fsm_slave */
 struct ec_fsm_slave {
     ec_slave_t *slave; /**< slave the FSM runs on */
     struct list_head list; /**< Used for execution list. */
+    ec_dict_request_t int_dict_request; /**< Internal dictionary request. */
 
     void (*state)(ec_fsm_slave_t *, ec_datagram_t *); /**< State function. */
     ec_datagram_t *datagram; /**< Previous state datagram. */
@@ -62,10 +72,23 @@ struct ec_fsm_slave {
     ec_foe_request_t *foe_request; /**< FoE request to process. */
     off_t foe_index; /**< Index to FoE write request data. */
     ec_soe_request_t *soe_request; /**< SoE request to process. */
+#ifdef EC_EOE
+    ec_eoe_request_t *eoe_request; /**< EoE request to process. */
+#endif
+    ec_mbg_request_t *mbg_request; /**< MBox Gateway request to process. */
+    ec_dict_request_t *dict_request; /**< Dictionary request to process. */
 
     ec_fsm_coe_t fsm_coe; /**< CoE state machine. */
     ec_fsm_foe_t fsm_foe; /**< FoE state machine. */
     ec_fsm_soe_t fsm_soe; /**< SoE state machine. */
+#ifdef EC_EOE
+    ec_fsm_eoe_t fsm_eoe; /**< EoE state machine. */
+#endif
+    ec_fsm_mbg_t fsm_mbg; /**< MBox Gateway state machine. */
+    ec_fsm_pdo_t fsm_pdo; /**< PDO configuration state machine. */
+    ec_fsm_change_t fsm_change; /**< State change state machine */
+    ec_fsm_slave_scan_t fsm_slave_scan; /**< slave scan state machine */
+    ec_fsm_slave_config_t fsm_slave_config; /**< slave config state machine. */
 };
 
 /*****************************************************************************/
@@ -75,6 +98,7 @@ void ec_fsm_slave_clear(ec_fsm_slave_t *);
 
 int ec_fsm_slave_exec(ec_fsm_slave_t *, ec_datagram_t *);
 void ec_fsm_slave_set_ready(ec_fsm_slave_t *);
+int ec_fsm_slave_set_unready(ec_fsm_slave_t *);
 int ec_fsm_slave_is_ready(const ec_fsm_slave_t *);
 
 /*****************************************************************************/

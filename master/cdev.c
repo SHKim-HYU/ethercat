@@ -1,6 +1,8 @@
 /******************************************************************************
  *
- *  Copyright (C) 2006-2020  Florian Pose, Ingenieurgemeinschaft IgH
+ *  $Id$
+ *
+ *  Copyright (C) 2006-2012  Florian Pose, Ingenieurgemeinschaft IgH
  *
  *  This file is part of the IgH EtherCAT Master.
  *
@@ -59,14 +61,14 @@ static int eccdev_mmap(struct file *, struct vm_area_struct *);
  */
 #define PAGE_FAULT_VERSION KERNEL_VERSION(2, 6, 23)
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
-# define FAULT_RETURN_TYPE int
-#else
-# define FAULT_RETURN_TYPE vm_fault_t
-#endif
-
 #if LINUX_VERSION_CODE >= PAGE_FAULT_VERSION
-static FAULT_RETURN_TYPE eccdev_vma_fault(
+static
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 0, 0)
+vm_fault_t
+#else
+int
+#endif
+eccdev_vma_fault(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
         struct vm_area_struct *,
 #endif
@@ -260,7 +262,13 @@ int eccdev_mmap(
  *
  * \return Zero on success, otherwise a negative error code.
  */
-static FAULT_RETURN_TYPE eccdev_vma_fault(
+static
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 0, 0)
+vm_fault_t
+#else
+int
+#endif
+eccdev_vma_fault(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
         struct vm_area_struct *vma, /**< Virtual memory area. */
 #endif
@@ -286,8 +294,12 @@ static FAULT_RETURN_TYPE eccdev_vma_fault(
     get_page(page);
     vmf->page = page;
 
-    EC_MASTER_DBG(priv->cdev->master, 1, "Vma fault,"
-            " offset = %lu, page = %p\n", offset, page);
+    EC_MASTER_DBG(priv->cdev->master, 1, "Vma fault, virtual_address = %p,"
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0))
+            " offset = %lu, page = %p\n", (void*)vmf->address, offset, page);
+#else
+            " offset = %lu, page = %p\n", vmf->virtual_address, offset, page);
+#endif
 
     return 0;
 }

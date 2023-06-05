@@ -84,7 +84,11 @@ int ec_debug_init(
     memset(&dbg->stats, 0, sizeof(struct net_device_stats));
 
     if (!(dbg->dev =
-          alloc_netdev(sizeof(ec_debug_t *), name, ether_setup))) {
+          alloc_netdev(sizeof(ec_debug_t *), name,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 17, 0)
+			NET_NAME_UNKNOWN,
+#endif
+			ether_setup))) {
         EC_MASTER_ERR(device->master, "Unable to allocate net_device"
                 " for debug object!\n");
         return -ENODEV;
@@ -192,7 +196,7 @@ void ec_debug_send(
     skb->dev = dbg->dev;
     skb->protocol = eth_type_trans(skb, dbg->dev);
     skb->ip_summed = CHECKSUM_UNNECESSARY;
-    netif_rx(skb);
+    netif_rx_ni(skb);
 }
 
 /******************************************************************************

@@ -87,7 +87,7 @@ class Command
         typedef list<unsigned int> MasterIndexList;
         void setMasters(const string &);
         MasterIndexList getMasterIndices() const;
-		unsigned int getSingleMasterIndex() const;
+        unsigned int getSingleMasterIndex() const;
 
         enum Verbosity {
             Quiet,
@@ -113,12 +113,16 @@ class Command
         void setForce(bool);
         bool getForce() const;
 
+        void setReset(bool);
+        bool getReset() const;
+
         void setOutputFile(const string &);
         const string &getOutputFile() const;
 
         void setSkin(const string &);
         const string &getSkin() const;
 
+        bool matches(const string &) const;
         bool matchesSubstr(const string &) const;
         bool matchesAbbrev(const string &) const;
 
@@ -132,9 +136,9 @@ class Command
     protected:
         enum {BreakAfterBytes = 16};
 
-        void throwInvalidUsageException(const stringstream &) const;
-        void throwCommandException(const string &) const;
-        void throwCommandException(const stringstream &) const;
+        static void throwInvalidUsageException(const stringstream &);
+        static void throwCommandException(const string &);
+        static void throwCommandException(const stringstream &);
         void throwSingleSlaveRequired(unsigned int) const;
 
         typedef list<ec_ioctl_slave_t> SlaveList;
@@ -147,17 +151,19 @@ class Command
 
         static string alStateString(uint8_t);
 
+        string aliases;
+        string positions;
+    
     private:
         string name;
         string briefDesc;
         string masters;
         Verbosity verbosity;
-        string aliases;
-        string positions;
         string domains;
         string dataType;
         bool emergency;
         bool force;
+        bool reset;
         string outputFile;
         string skin;
 
@@ -204,6 +210,13 @@ inline bool Command::getEmergency() const
 inline bool Command::getForce() const
 {
     return force;
+}
+
+/****************************************************************************/
+
+inline bool Command::getReset() const
+{
+    return reset;
 }
 
 /****************************************************************************/

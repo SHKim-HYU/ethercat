@@ -102,6 +102,7 @@ void ec_datagram_init(ec_datagram_t *datagram /**< EtherCAT datagram. */)
     datagram->cycles_sent = 0;
 #endif
     datagram->jiffies_sent = 0;
+    datagram->app_time_sent = 0;
 #ifdef EC_HAVE_CYCLES
     datagram->cycles_received = 0;
 #endif
@@ -178,6 +179,27 @@ int ec_datagram_prealloc(
 void ec_datagram_zero(ec_datagram_t *datagram /**< EtherCAT datagram. */)
 {
     memset(datagram->data, 0x00, datagram->data_size);
+}
+
+/*****************************************************************************/
+
+/** Copies a previously constructed datagram for repeated send.
+ * 
+ * \return Return value of ec_datagram_prealloc().
+ */
+int ec_datagram_repeat(
+        ec_datagram_t *datagram, /**< EtherCAT datagram to update. */
+        const ec_datagram_t *source /**< EtherCAT datagram to copy. */)
+{
+    int ret;
+    size_t data_size = source->data_size;
+    EC_FUNC_HEADER;
+    if (datagram != source) {
+        datagram->type = source->type;
+        memcpy(datagram->address, source->address, sizeof(datagram->address));
+        memcpy(datagram->data, source->data, data_size);
+    }
+    EC_FUNC_FOOTER;
 }
 
 /*****************************************************************************/
@@ -566,31 +588,34 @@ void ec_datagram_print_state(
         const ec_datagram_t *datagram /**< EtherCAT datagram */
         )
 {
-    printk("Datagram ");
+    printk(KERN_CONT "Datagram ");
     switch (datagram->state) {
         case EC_DATAGRAM_INIT:
-            printk("initialized");
+            printk(KERN_CONT "initialized");
             break;
         case EC_DATAGRAM_QUEUED:
-            printk("queued");
+            printk(KERN_CONT "queued");
             break;
         case EC_DATAGRAM_SENT:
-            printk("sent");
+            printk(KERN_CONT "sent");
             break;
         case EC_DATAGRAM_RECEIVED:
-            printk("received");
+            printk(KERN_CONT "received");
             break;
         case EC_DATAGRAM_TIMED_OUT:
-            printk("timed out");
+            printk(KERN_CONT "timed out");
             break;
         case EC_DATAGRAM_ERROR:
-            printk("error");
+            printk(KERN_CONT "error");
+            break;
+        case EC_DATAGRAM_INVALID:
+            printk(KERN_CONT "invalid");
             break;
         default:
-            printk("???");
+            printk(KERN_CONT "???");
     }
 
-    printk(".\n");
+    printk(KERN_CONT ".\n");
 }
 
 /*****************************************************************************/
@@ -604,12 +629,12 @@ void ec_datagram_print_wc_error(
         )
 {
     if (datagram->working_counter == 0)
-        printk("No response.");
+        printk(KERN_CONT "No response.");
     else if (datagram->working_counter > 1)
-        printk("%u slaves responded!", datagram->working_counter);
+        printk(KERN_CONT "%u slaves responded!", datagram->working_counter);
     else
-        printk("Success.");
-    printk("\n");
+        printk(KERN_CONT "Success.");
+    printk(KERN_CONT "\n");
 }
 
 /*****************************************************************************/
@@ -644,6 +669,116 @@ const char *ec_datagram_type_string(
         )
 {
     return type_strings[datagram->type];
+}
+
+/*****************************************************************************/
+
+/** Initialize mailbox response data.
+ *
+ */
+void ec_mbox_data_init(
+        ec_mbox_data_t *mbox_data /**< Mailbox response data. */
+        )
+{
+    mbox_data->data = NULL;
+    mbox_data->data_size = 0;
+    mbox_data->payload_size = 0;
+}
+
+
+/*****************************************************************************/
+
+/** Free internal memory for mailbox response data.
+ *
+ */
+void ec_mbox_data_clear(
+        ec_mbox_data_t *mbox_data /**< Mailbox response data. */
+        )
+{
+    if (mbox_data->data) {
+        kfree(mbox_data->data);
+        mbox_data->data = NULL;
+        mbox_data->data_size = 0;
+    }
+}
+
+
+/*****************************************************************************/
+
+/** Allocates internal memory for mailbox response data.
+ *
+ * \return 0 in case of success, otherwise \a -ENOMEM.
+ */
+int ec_mbox_data_prealloc(
+        ec_mbox_data_t *mbox_data, /**< Mailbox response data. */
+        size_t size /**< Mailbox size in bytes. */
+        )
+{
+    if (mbox_data->data) {
+        kfree(mbox_data->data);
+        mbox_data->data = NULL;
+        mbox_data->data_size = 0;
+    }
+
+    if (!(mbox_data->data = kmalloc(size, GFP_KERNEL))) {
+        EC_ERR("Failed to allocate %zu bytes of mailbox data memory!\n", size);
+        return -ENOMEM;
+    }
+    mbox_data->data_size = size;
+    return 0;
+}
+
+
+/*****************************************************************************/
+
+/** Allocates internal memory for mailbox response data for all slave
+ *  supported mailbox protocols .
+ *
+  */
+void ec_mbox_prot_data_prealloc(
+        ec_slave_t *slave, /**< EtherCAT slave. */
+        uint16_t protocols, /**< Supported protocols. */
+        size_t size /**< Mailbox size in bytes. */
+        )
+{
+    if ((size > 0) && (size <= EC_MAX_DATA_SIZE)) {
+#ifdef EC_EOE
+        if (protocols & EC_MBOX_EOE) {
+            ec_mbox_data_prealloc(&slave->mbox_eoe_frag_data, size);
+            ec_mbox_data_prealloc(&slave->mbox_eoe_init_data, size);
+        } else {
+            ec_mbox_data_clear(&slave->mbox_eoe_frag_data);
+            ec_mbox_data_clear(&slave->mbox_eoe_init_data);
+        }
+#endif
+        if (protocols & EC_MBOX_COE) {
+            ec_mbox_data_prealloc(&slave->mbox_coe_data, size);
+        } else {
+            ec_mbox_data_clear(&slave->mbox_coe_data);
+        }
+        if (protocols & EC_MBOX_FOE) {
+            ec_mbox_data_prealloc(&slave->mbox_foe_data, size);
+        } else {
+            ec_mbox_data_clear(&slave->mbox_foe_data);
+        }
+        if (protocols & EC_MBOX_SOE) {
+            ec_mbox_data_prealloc(&slave->mbox_soe_data, size);
+        } else {
+            ec_mbox_data_clear(&slave->mbox_soe_data);
+        }
+        if (protocols & EC_MBOX_VOE) {
+            ec_mbox_data_prealloc(&slave->mbox_voe_data, size);
+        } else {
+            ec_mbox_data_clear(&slave->mbox_voe_data);
+        }
+        
+        // alloc mailbox gateway if slave supports any protocol
+        if (protocols) {
+            ec_mbox_data_prealloc(&slave->mbox_mbg_data, size);
+        } else {
+            ec_mbox_data_clear(&slave->mbox_mbg_data);
+        }
+    }
 }
 
 /*****************************************************************************/

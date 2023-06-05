@@ -251,6 +251,22 @@ void MasterDevice::getData(ec_ioctl_domain_data_t *data,
 
 /****************************************************************************/
 
+void MasterDevice::getPcap(ec_ioctl_pcap_data_t *data,
+        unsigned char resetData, unsigned int dataSize, unsigned char *mem)
+{
+    data->reset_data = resetData;
+    data->data_size = dataSize;
+    data->target = mem;
+
+    if (ioctl(fd, EC_IOCTL_PCAP_DATA, data) < 0) {
+        stringstream err;
+        err << "Failed to get pcap data: " << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
 void MasterDevice::getSlave(ec_ioctl_slave_t *slave, uint16_t slaveIndex)
 {
     slave->position = slaveIndex;
@@ -436,6 +452,19 @@ void MasterDevice::writeReg(
 
 /****************************************************************************/
 
+void MasterDevice::readWriteReg(
+        ec_ioctl_slave_reg_t *data
+        )
+{
+    if (ioctl(fd, EC_IOCTL_SLAVE_REG_READWRITE, data) < 0) {
+        stringstream err;
+        err << "Failed to read-write register: " << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
 void MasterDevice::readFoe(
         ec_ioctl_slave_foe_t *data
         )
@@ -514,6 +543,17 @@ void MasterDevice::sdoUpload(ec_ioctl_slave_sdo_upload_t *data)
 
 /****************************************************************************/
 
+void MasterDevice::dictUpload(ec_ioctl_slave_dict_upload_t *data)
+{
+    if (ioctl(fd, EC_IOCTL_SLAVE_DICT_UPLOAD, data) < 0) {
+        stringstream err;
+        err << "Failed to upload dictionary: " << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
 void MasterDevice::requestState(
         uint16_t slavePosition,
         uint8_t state
@@ -537,6 +577,44 @@ void MasterDevice::requestState(
 
 /****************************************************************************/
 
+void MasterDevice::requestReboot(
+        uint16_t slavePosition
+        )
+{
+    ec_ioctl_slave_reboot_t data;
+
+    data.slave_position = slavePosition;
+    data.broadcast = 0;
+
+    if (ioctl(fd, EC_IOCTL_SLAVE_REBOOT, &data)) {
+        stringstream err;
+        err << "Failed to request slave reboot: ";
+        if (errno == EINVAL)
+            err << "Slave " << slavePosition << " does not exist!";
+        else
+            err << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
+void MasterDevice::requestRebootAll()
+{
+    ec_ioctl_slave_reboot_t data;
+
+    data.slave_position = 0;
+    data.broadcast = 1;
+
+    if (ioctl(fd, EC_IOCTL_SLAVE_REBOOT, &data)) {
+        stringstream err;
+        err << "Failed to request global reboot: " << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
 #ifdef EC_EOE
 
 void MasterDevice::getEoeHandler(
@@ -549,6 +627,42 @@ void MasterDevice::getEoeHandler(
     if (ioctl(fd, EC_IOCTL_EOE_HANDLER, eoe)) {
         stringstream err;
         err << "Failed to get EoE handler: " << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
+void MasterDevice::addEoeIf(
+        uint16_t alias,
+        uint16_t posn
+        )
+{
+    ec_ioctl_eoe_if_t data;
+    data.alias = alias;
+    data.position = posn;
+
+    if (ioctl(fd, EC_IOCTL_EOE_ADDIF, &data)) {
+        stringstream err;
+        err << "Failed to add EoE interface: " << strerror(errno);
+        throw MasterDeviceException(err);
+    }
+}
+
+/****************************************************************************/
+
+void MasterDevice::delEoeIf(
+        uint16_t alias,
+        uint16_t posn
+        )
+{
+    ec_ioctl_eoe_if_t data;
+    data.alias = alias;
+    data.position = posn;
+
+    if (ioctl(fd, EC_IOCTL_EOE_DELIF, &data)) {
+        stringstream err;
+        err << "Failed to delete EoE interface: " << strerror(errno);
         throw MasterDeviceException(err);
     }
 }
@@ -584,5 +698,22 @@ void MasterDevice::writeSoe(ec_ioctl_slave_soe_write_t *data)
         }
     }
 }
+
+/****************************************************************************/
+
+#ifdef EC_EOE
+void MasterDevice::setIpParam(ec_ioctl_slave_eoe_ip_t *data)
+{
+    if (ioctl(fd, EC_IOCTL_SLAVE_EOE_IP_PARAM, data) < 0) {
+        if (errno == EIO && data->result) {
+            throw MasterDeviceEoeException(data->result);
+        } else {
+            stringstream err;
+            err << "Failed to set IP parameters: " << strerror(errno);
+            throw MasterDeviceException(err);
+        }
+    }
+}
+#endif
 
 /*****************************************************************************/

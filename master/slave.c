@@ -71,15 +71,23 @@ void ec_slave_init(
 
     slave->master = master;
     slave->device_index = dev_idx;
+
     slave->ring_position = ring_position;
     slave->station_address = station_address;
     slave->effective_alias = 0x0000;
-
+#ifdef EC_SII_CACHE
+    slave->effective_vendor_id = 0x00000000;
+    slave->effective_product_code = 0x00000000;
+    slave->effective_revision_number = 0x00000000;
+    slave->effective_serial_number = 0x00000000;
+#endif
     slave->config = NULL;
     slave->requested_state = EC_SLAVE_STATE_PREOP;
     slave->current_state = EC_SLAVE_STATE_UNKNOWN;
+    slave->last_al_error = 0;
     slave->error_flag = 0;
     slave->force_config = 0;
+    slave->reboot = 0;
     slave->configured_rx_mailbox_offset = 0x0000;
     slave->configured_rx_mailbox_size = 0x0000;
     slave->configured_tx_mailbox_offset = 0x0000;
@@ -95,15 +103,21 @@ void ec_slave_init(
         slave->ports[i].desc = EC_PORT_NOT_IMPLEMENTED;
 
         slave->ports[i].link.link_up = 0;
-        slave->ports[i].link.loop_closed = 0;
+        slave->ports[i].link.loop_closed = 1;
         slave->ports[i].link.signal_detected = 0;
-        slave->sii.physical_layer[i] = 0xFF;
+        slave->ports[i].link.bypassed = 0;
 
         slave->ports[i].receive_time = 0U;
 
         slave->ports[i].next_slave = NULL;
         slave->ports[i].delay_to_next_dc = 0U;
+
+#ifdef EC_LOOP_CONTROL
+        slave->ports[i].state = EC_SLAVE_PORT_DOWN;
+        slave->ports[i].link_detection_jiffies = 0;
+#endif
     }
+    slave->upstream_port = 0;
 
     slave->base_fmmu_bit_operation = 0;
     slave->base_dc_supported = 0;
@@ -111,43 +125,13 @@ void ec_slave_init(
     slave->has_dc_system_time = 0;
     slave->transmission_delay = 0U;
 
-    slave->sii_words = NULL;
-    slave->sii_nwords = 0;
+    slave->vendor_words = NULL;
+    slave->sii_image = NULL;
 
-    slave->sii.alias = 0x0000;
-    slave->sii.vendor_id = 0x00000000;
-    slave->sii.product_code = 0x00000000;
-    slave->sii.revision_number = 0x00000000;
-    slave->sii.serial_number = 0x00000000;
-    slave->sii.boot_rx_mailbox_offset = 0x0000;
-    slave->sii.boot_rx_mailbox_size = 0x0000;
-    slave->sii.boot_tx_mailbox_offset = 0x0000;
-    slave->sii.boot_tx_mailbox_size = 0x0000;
-    slave->sii.std_rx_mailbox_offset = 0x0000;
-    slave->sii.std_rx_mailbox_size = 0x0000;
-    slave->sii.std_tx_mailbox_offset = 0x0000;
-    slave->sii.std_tx_mailbox_size = 0x0000;
-    slave->sii.mailbox_protocols = 0;
-
-    slave->sii.strings = NULL;
-    slave->sii.string_count = 0;
-
-    slave->sii.has_general = 0;
-    slave->sii.group = NULL;
-    slave->sii.image = NULL;
-    slave->sii.order = NULL;
-    slave->sii.name = NULL;
-    memset(&slave->sii.coe_details, 0x00, sizeof(ec_sii_coe_details_t));
-    memset(&slave->sii.general_flags, 0x00, sizeof(ec_sii_general_flags_t));
-    slave->sii.current_on_ebus = 0;
-
-    slave->sii.syncs = NULL;
-    slave->sii.sync_count = 0;
-
-    INIT_LIST_HEAD(&slave->sii.pdos);
 
     INIT_LIST_HEAD(&slave->sdo_dictionary);
 
+    slave->scan_required = 1;
     slave->sdo_dictionary_fetched = 0;
     slave->jiffies_preop = 0;
 
@@ -155,10 +139,106 @@ void ec_slave_init(
     INIT_LIST_HEAD(&slave->reg_requests);
     INIT_LIST_HEAD(&slave->foe_requests);
     INIT_LIST_HEAD(&slave->soe_requests);
+    INIT_LIST_HEAD(&slave->eoe_requests);
+    INIT_LIST_HEAD(&slave->mbg_requests);
+    INIT_LIST_HEAD(&slave->dict_requests);
 
     // create state machine object
     ec_fsm_slave_init(&slave->fsm, slave);
+
+    slave->read_mbox_busy = 0;
+    rt_mutex_init(&slave->mbox_sem);
+
+#ifdef EC_EOE
+    ec_mbox_data_init(&slave->mbox_eoe_frag_data);
+    ec_mbox_data_init(&slave->mbox_eoe_init_data);
+#endif
+    ec_mbox_data_init(&slave->mbox_coe_data);
+    ec_mbox_data_init(&slave->mbox_foe_data);
+    ec_mbox_data_init(&slave->mbox_soe_data);
+    ec_mbox_data_init(&slave->mbox_voe_data);
+    ec_mbox_data_init(&slave->mbox_mbg_data);
+
+    slave->valid_mbox_data = 0;
 }
+
+
+void ec_slave_sii_image_init(
+        ec_sii_image_t *sii_image /**< SII image */
+        )
+{
+    unsigned int i;
+
+    sii_image->words = NULL;
+    sii_image->nwords = 0;
+
+    sii_image->sii.alias = 0x0000;
+    sii_image->sii.vendor_id = 0x00000000;
+    sii_image->sii.product_code = 0x00000000;
+    sii_image->sii.revision_number = 0x00000000;
+    sii_image->sii.serial_number = 0x00000000;
+    sii_image->sii.boot_rx_mailbox_offset = 0x0000;
+    sii_image->sii.boot_rx_mailbox_size = 0x0000;
+    sii_image->sii.boot_tx_mailbox_offset = 0x0000;
+    sii_image->sii.boot_tx_mailbox_size = 0x0000;
+    sii_image->sii.std_rx_mailbox_offset = 0x0000;
+    sii_image->sii.std_rx_mailbox_size = 0x0000;
+    sii_image->sii.std_tx_mailbox_offset = 0x0000;
+    sii_image->sii.std_tx_mailbox_size = 0x0000;
+    sii_image->sii.mailbox_protocols = 0;
+    sii_image->sii.strings = NULL;
+    sii_image->sii.string_count = 0;
+
+    sii_image->sii.has_general = 0;
+    sii_image->sii.group = NULL;
+    sii_image->sii.image = NULL;
+    sii_image->sii.order = NULL;
+    sii_image->sii.name = NULL;
+    memset(&sii_image->sii.coe_details, 0x00, sizeof(ec_sii_coe_details_t));
+    memset(&sii_image->sii.general_flags, 0x00, sizeof(ec_sii_general_flags_t));
+    sii_image->sii.current_on_ebus = 0;
+
+    sii_image->sii.syncs = NULL;
+    sii_image->sii.sync_count = 0;
+
+    INIT_LIST_HEAD(&sii_image->sii.pdos);
+
+    for (i = 0; i < EC_MAX_PORTS; i++) {
+        sii_image->sii.physical_layer[i] = 0xFF;
+    }
+}
+
+/*****************************************************************************/
+
+/**
+   Clears the mailbox lock.
+*/
+void ec_read_mbox_lock_clear(ec_slave_t *slave)
+{
+    rt_mutex_lock(&slave->mbox_sem);
+    slave->read_mbox_busy = 0;
+    rt_mutex_unlock(&slave->mbox_sem);
+}
+
+
+/*****************************************************************************/
+
+/**
+   Return the current mailbox lock status and lock it if not locked.
+*/
+int ec_read_mbox_locked(ec_slave_t *slave)
+{
+    int rc;
+
+    rt_mutex_lock(&slave->mbox_sem);
+    rc = slave->read_mbox_busy;
+    if (!slave->read_mbox_busy) {
+        slave->read_mbox_busy = 1;
+    }
+    rt_mutex_unlock(&slave->mbox_sem);
+    return rc;
+}
+
 
 /*****************************************************************************/
 
@@ -170,8 +250,6 @@ void ec_slave_init(
 void ec_slave_clear(ec_slave_t *slave /**< EtherCAT slave */)
 {
     ec_sdo_t *sdo, *next_sdo;
-    unsigned int i;
-    ec_pdo_t *pdo, *next_pdo;
 
     // abort all pending requests
 
@@ -211,6 +289,33 @@ void ec_slave_clear(ec_slave_t *slave /**< EtherCAT slave */)
         request->state = EC_INT_REQUEST_FAILURE;
     }
 
+    while (!list_empty(&slave->eoe_requests)) {
+        ec_eoe_request_t *request =
+            list_entry(slave->eoe_requests.next, ec_eoe_request_t, list);
+        list_del_init(&request->list); // dequeue
+        EC_SLAVE_WARN(slave, "Discarding EoE request,"
+                " slave about to be deleted.\n");
+        request->state = EC_INT_REQUEST_FAILURE;
+    }
+
+    while (!list_empty(&slave->mbg_requests)) {
+        ec_mbg_request_t *request =
+            list_entry(slave->mbg_requests.next, ec_mbg_request_t, list);
+        list_del_init(&request->list); // dequeue
+        EC_SLAVE_WARN(slave, "Discarding MBox Gateway request,"
+                " slave about to be deleted.\n");
+        request->state = EC_INT_REQUEST_FAILURE;
+    }
+
+    while (!list_empty(&slave->dict_requests)) {
+        ec_dict_request_t *request =
+            list_entry(slave->dict_requests.next, ec_dict_request_t, list);
+        list_del_init(&request->list); // dequeue
+        EC_SLAVE_WARN(slave, "Discarding dictionary request,"
+                " slave about to be deleted.\n");
+        request->state = EC_INT_REQUEST_FAILURE;
+    }
+
     wake_up_all(&slave->master->request_queue);
 
     if (slave->config) {
@@ -224,26 +329,21 @@ void ec_slave_clear(ec_slave_t *slave /**< EtherCAT slave */)
         kfree(sdo);
     }
 
-    // free all strings
-    if (slave->sii.strings) {
-        for (i = 0; i < slave->sii.string_count; i++)
-            kfree(slave->sii.strings[i]);
-        kfree(slave->sii.strings);
+    if (slave->vendor_words) {
+        kfree(slave->vendor_words);
+        slave->vendor_words = NULL;
     }
 
-    // free all sync managers
-    ec_slave_clear_sync_managers(slave);
-
-    // free all SII PDOs
-    list_for_each_entry_safe(pdo, next_pdo, &slave->sii.pdos, list) {
-        list_del(&pdo->list);
-        ec_pdo_clear(pdo);
-        kfree(pdo);
-    }
-
-    if (slave->sii_words) {
-        kfree(slave->sii_words);
-    }
+    // free mailbox response data
+#ifdef EC_EOE
+    ec_mbox_data_clear(&slave->mbox_eoe_frag_data);
+    ec_mbox_data_clear(&slave->mbox_eoe_init_data);
+#endif
+    ec_mbox_data_clear(&slave->mbox_coe_data);
+    ec_mbox_data_clear(&slave->mbox_foe_data);
+    ec_mbox_data_clear(&slave->mbox_soe_data);
+    ec_mbox_data_clear(&slave->mbox_voe_data);
+    ec_mbox_data_clear(&slave->mbox_mbg_data);
 
     ec_fsm_slave_clear(&slave->fsm);
 }
@@ -256,12 +356,52 @@ void ec_slave_clear_sync_managers(ec_slave_t *slave /**< EtherCAT slave. */)
 {
     unsigned int i;
 
-    if (slave->sii.syncs) {
-        for (i = 0; i < slave->sii.sync_count; i++) {
-            ec_sync_clear(&slave->sii.syncs[i]);
+    if (slave->sii_image && slave->sii_image->sii.syncs) {
+        for (i = 0; i < slave->sii_image->sii.sync_count; i++) {
+            ec_sync_clear(&slave->sii_image->sii.syncs[i]);
         }
-        kfree(slave->sii.syncs);
-        slave->sii.syncs = NULL;
+        kfree(slave->sii_image->sii.syncs);
+        slave->sii_image->sii.syncs = NULL;
+    }
+}
+
+/*****************************************************************************/
+
+/**
+ * Sets the data-link state of a slave.
+ */
+
+void ec_slave_set_dl_status(ec_slave_t *slave, /**< EtherCAT slave */
+        uint16_t new_state /**< content of registers 0x0110-0x0111. */
+        )
+{
+    unsigned int i;
+    uint8_t state;
+
+    for (i = 0; i < EC_MAX_PORTS; i++) {
+        // link status
+        state = new_state & (1 << (4 + i)) ? 1 : 0;
+        if (slave->ports[i].link.link_up != state) {
+            EC_SLAVE_DBG(slave, 1, "Port %u link status changed to %s.\n",
+                    i, state ? "up" : "down");
+            slave->ports[i].link.link_up = state;
+        }
+
+        // loop status
+        state = new_state & (1 << (8 + i * 2)) ? 1 : 0;
+        if (slave->ports[i].link.loop_closed != state) {
+            EC_SLAVE_DBG(slave, 1, "Port %u loop status changed to %s.\n",
+                    i, state ? "closed" : "open");
+            slave->ports[i].link.loop_closed = state;
+        }
+
+        // signal detection
+        state = new_state & (1 << (9 + i * 2)) ? 1 : 0;
+        if (slave->ports[i].link.signal_detected != state) {
+            EC_SLAVE_DBG(slave, 1, "Port %u signal status changed to %s.\n",
+                    i, state ? "yes" : "no");
+            slave->ports[i].link.signal_detected = state;
+        }
     }
 }
 
@@ -271,7 +411,7 @@ void ec_slave_clear_sync_managers(ec_slave_t *slave /**< EtherCAT slave. */)
  * Sets the application state of a slave.
  */
 
-void ec_slave_set_state(ec_slave_t *slave, /**< EtherCAT slave */
+void ec_slave_set_al_status(ec_slave_t *slave, /**< EtherCAT slave */
         ec_slave_state_t new_state /**< new application state */
         )
 {
@@ -304,6 +444,18 @@ void ec_slave_request_state(ec_slave_t *slave, /**< EtherCAT slave */
 /*****************************************************************************/
 
 /**
+ * Request a slave reboot (some slaves will ignore this).
+ */
+
+void ec_slave_request_reboot(ec_slave_t *slave /**< EtherCAT slave */
+                            )
+{
+    slave->reboot = 1;
+}
+
+/*****************************************************************************/
+
+/**
    Fetches data from a STRING category.
    \todo range checking
    \return 0 in case of success, else < 0
@@ -319,11 +471,16 @@ int ec_slave_fetch_sii_strings(
     size_t size;
     off_t offset;
 
-    slave->sii.string_count = data[0];
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return -EINVAL;
+    }
 
-    if (slave->sii.string_count) {
-        if (!(slave->sii.strings =
-                    kmalloc(sizeof(char *) * slave->sii.string_count,
+    slave->sii_image->sii.string_count = data[0];
+
+    if (slave->sii_image->sii.string_count) {
+        if (!(slave->sii_image->sii.strings =
+                    kmalloc(sizeof(char *) * slave->sii_image->sii.string_count,
                         GFP_KERNEL))) {
             EC_SLAVE_ERR(slave, "Failed to allocate string array memory.\n");
             err = -ENOMEM;
@@ -331,17 +488,17 @@ int ec_slave_fetch_sii_strings(
         }
 
         offset = 1;
-        for (i = 0; i < slave->sii.string_count; i++) {
+        for (i = 0; i < slave->sii_image->sii.string_count; i++) {
             size = data[offset];
             // allocate memory for string structure and data at a single blow
-            if (!(slave->sii.strings[i] =
+            if (!(slave->sii_image->sii.strings[i] =
                         kmalloc(sizeof(char) * size + 1, GFP_KERNEL))) {
                 EC_SLAVE_ERR(slave, "Failed to allocate string memory.\n");
                 err = -ENOMEM;
                 goto out_free;
             }
-            memcpy(slave->sii.strings[i], data + offset + 1, size);
-            slave->sii.strings[i][size] = 0x00; // append binary zero
+            memcpy(slave->sii_image->sii.strings[i], data + offset + 1, size);
+            slave->sii_image->sii.strings[i][size] = 0x00; // append binary zero
             offset += 1 + size;
         }
     }
@@ -350,11 +507,11 @@ int ec_slave_fetch_sii_strings(
 
 out_free:
     for (i--; i >= 0; i--)
-        kfree(slave->sii.strings[i]);
-    kfree(slave->sii.strings);
-    slave->sii.strings = NULL;
+        kfree(slave->sii_image->sii.strings[i]);
+    kfree(slave->sii_image->sii.strings);
+    slave->sii_image->sii.strings = NULL;
 out_zero:
-    slave->sii.string_count = 0;
+    slave->sii_image->sii.string_count = 0;
     return err;
 }
 
@@ -380,31 +537,36 @@ int ec_slave_fetch_sii_general(
         return -EINVAL;
     }
 
-    slave->sii.group = ec_slave_sii_string(slave, data[0]);
-    slave->sii.image = ec_slave_sii_string(slave, data[1]);
-    slave->sii.order = ec_slave_sii_string(slave, data[2]);
-    slave->sii.name = ec_slave_sii_string(slave, data[3]);
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return -EINVAL;
+    }
+
+    slave->sii_image->sii.group = ec_slave_sii_string(slave, data[0]);
+    slave->sii_image->sii.image = ec_slave_sii_string(slave, data[1]);
+    slave->sii_image->sii.order = ec_slave_sii_string(slave, data[2]);
+    slave->sii_image->sii.name = ec_slave_sii_string(slave, data[3]);
 
     for (i = 0; i < 4; i++)
-        slave->sii.physical_layer[i] =
+        slave->sii_image->sii.physical_layer[i] =
             (data[4] & (0x03 << (i * 2))) >> (i * 2);
 
     // read CoE details
     flags = EC_READ_U8(data + 5);
-    slave->sii.coe_details.enable_sdo =                 (flags >> 0) & 0x01;
-    slave->sii.coe_details.enable_sdo_info =            (flags >> 1) & 0x01;
-    slave->sii.coe_details.enable_pdo_assign =          (flags >> 2) & 0x01;
-    slave->sii.coe_details.enable_pdo_configuration =   (flags >> 3) & 0x01;
-    slave->sii.coe_details.enable_upload_at_startup =   (flags >> 4) & 0x01;
-    slave->sii.coe_details.enable_sdo_complete_access = (flags >> 5) & 0x01;
+    slave->sii_image->sii.coe_details.enable_sdo =                 (flags >> 0) & 0x01;
+    slave->sii_image->sii.coe_details.enable_sdo_info =            (flags >> 1) & 0x01;
+    slave->sii_image->sii.coe_details.enable_pdo_assign =          (flags >> 2) & 0x01;
+    slave->sii_image->sii.coe_details.enable_pdo_configuration =   (flags >> 3) & 0x01;
+    slave->sii_image->sii.coe_details.enable_upload_at_startup =   (flags >> 4) & 0x01;
+    slave->sii_image->sii.coe_details.enable_sdo_complete_access = (flags >> 5) & 0x01;
 
     // read general flags
     flags = EC_READ_U8(data + 0x000B);
-    slave->sii.general_flags.enable_safeop =  (flags >> 0) & 0x01;
-    slave->sii.general_flags.enable_not_lrw = (flags >> 1) & 0x01;
+    slave->sii_image->sii.general_flags.enable_safeop =  (flags >> 0) & 0x01;
+    slave->sii_image->sii.general_flags.enable_not_lrw = (flags >> 1) & 0x01;
 
-    slave->sii.current_on_ebus = EC_READ_S16(data + 0x0C);
-    slave->sii.has_general = 1;
+    slave->sii_image->sii.current_on_ebus = EC_READ_S16(data + 0x0C);
+    slave->sii_image->sii.has_general = 1;
     return 0;
 }
 
@@ -435,10 +597,15 @@ int ec_slave_fetch_sii_syncs(
         return -EINVAL;
     }
 
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return -EINVAL;
+    }
+
     count = data_size / 8;
 
     if (count) {
-        total_count = count + slave->sii.sync_count;
+        total_count = count + slave->sii_image->sii.sync_count;
         if (total_count > EC_MAX_SYNC_MANAGERS) {
             EC_SLAVE_ERR(slave, "Exceeded maximum number of"
                     " sync managers!\n");
@@ -451,12 +618,12 @@ int ec_slave_fetch_sii_syncs(
             return -ENOMEM;
         }
 
-        for (i = 0; i < slave->sii.sync_count; i++)
-            ec_sync_init_copy(syncs + i, slave->sii.syncs + i);
+        for (i = 0; i < slave->sii_image->sii.sync_count; i++)
+            ec_sync_init_copy(syncs + i, slave->sii_image->sii.syncs + i);
 
         // initialize new sync managers
         for (i = 0; i < count; i++, data += 8) {
-            index = i + slave->sii.sync_count;
+            index = i + slave->sii_image->sii.sync_count;
             sync = &syncs[index];
 
             ec_sync_init(sync, slave);
@@ -466,10 +633,10 @@ int ec_slave_fetch_sii_syncs(
             sync->enable = EC_READ_U8(data + 6);
         }
 
-        if (slave->sii.syncs)
-            kfree(slave->sii.syncs);
-        slave->sii.syncs = syncs;
-        slave->sii.sync_count = total_count;
+        if (slave->sii_image->sii.syncs)
+            kfree(slave->sii_image->sii.syncs);
+        slave->sii_image->sii.syncs = syncs;
+        slave->sii_image->sii.sync_count = total_count;
     }
 
     return 0;
@@ -494,6 +661,11 @@ int ec_slave_fetch_sii_pdos(
     ec_pdo_entry_t *entry;
     unsigned int entry_count, i;
 
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return -EINVAL;
+    }
+
     while (data_size >= 8) {
         if (!(pdo = kmalloc(sizeof(ec_pdo_t), GFP_KERNEL))) {
             EC_SLAVE_ERR(slave, "Failed to allocate PDO memory.\n");
@@ -511,7 +683,7 @@ int ec_slave_fetch_sii_pdos(
             kfree(pdo);
             return ret;
         }
-        list_add_tail(&pdo->list, &slave->sii.pdos);
+        list_add_tail(&pdo->list, &slave->sii_image->sii.pdos);
 
         data_size -= 8;
         data += 8;
@@ -573,12 +745,17 @@ char *ec_slave_sii_string(
     if (!index--)
         return NULL;
 
-    if (index >= slave->sii.string_count) {
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return NULL;
+    }
+
+    if (index >= slave->sii_image->sii.string_count) {
         EC_SLAVE_DBG(slave, 1, "String %u not found.\n", index);
         return NULL;
     }
 
-    return slave->sii.strings[index];
+    return slave->sii_image->sii.strings[index];
 }
 
 /*****************************************************************************/
@@ -592,8 +769,14 @@ ec_sync_t *ec_slave_get_sync(
         uint8_t sync_index /**< Sync manager index. */
         )
 {
-    if (sync_index < slave->sii.sync_count) {
-        return &slave->sii.syncs[sync_index];
+
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return NULL;
+    }
+
+    if (sync_index < slave->sii_image->sii.sync_count) {
+        return &slave->sii_image->sii.syncs[sync_index];
     } else {
         return NULL;
     }
@@ -731,8 +914,13 @@ const ec_pdo_t *ec_slave_find_pdo(
     const ec_sync_t *sync;
     const ec_pdo_t *pdo;
 
-    for (i = 0; i < slave->sii.sync_count; i++) {
-        sync = &slave->sii.syncs[i];
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return NULL;
+    }
+
+    for (i = 0; i < slave->sii_image->sii.sync_count; i++) {
+        sync = &slave->sii_image->sii.syncs[i];
 
         if (!(pdo = ec_pdo_list_find_pdo_const(&sync->pdos, index)))
             continue;
@@ -786,8 +974,13 @@ void ec_slave_attach_pdo_names(
     ec_sync_t *sync;
     ec_pdo_t *pdo;
 
-    for (i = 0; i < slave->sii.sync_count; i++) {
-        sync = slave->sii.syncs + i;
+    if (!slave->sii_image) {
+        EC_SLAVE_ERR(slave, "SII data not attached!\n");
+        return;
+    }
+
+    for (i = 0; i < slave->sii_image->sii.sync_count; i++) {
+        sync = slave->sii_image->sii.syncs + i;
         list_for_each_entry(pdo, &sync->pdos.list, list) {
             ec_slave_find_names_for_pdo(slave, pdo);
         }
@@ -819,9 +1012,40 @@ unsigned int ec_slave_get_previous_port(
         if (slave->ports[port_index].next_slave) {
             return port_index;
         }
-    } while (port_index);
+    } while (port_index != slave->upstream_port);
 
-    return 0;
+    return slave->upstream_port;
+}
+
+/*****************************************************************************/
+
+/** Returns the previous connected & unbypassed port of a given port.
+ *
+ * \return Port index.
+ */
+unsigned int ec_slave_get_previous_normal_port(
+        ec_slave_t *slave, /**< EtherCAT slave. */
+        unsigned int port_index /**< Port index. */
+        )
+{
+    static const unsigned int prev_table[EC_MAX_PORTS] = {
+        2, 3, 1, 0
+    };
+
+    if (port_index >= EC_MAX_PORTS) {
+        EC_SLAVE_WARN(slave, "%s(port_index=%u): Invalid port index!\n",
+                __func__, port_index);
+    }
+
+    do {
+        port_index = prev_table[port_index];
+        if (!slave->ports[port_index].link.bypassed &&
+                slave->ports[port_index].next_slave) {
+            return port_index;
+        }
+    } while (port_index != slave->upstream_port);
+
+    return slave->upstream_port;
 }
 
 /*****************************************************************************/
@@ -849,9 +1073,45 @@ unsigned int ec_slave_get_next_port(
         if (slave->ports[port_index].next_slave) {
             return port_index;
         }
-    } while (port_index);
+    } while (port_index != slave->upstream_port);
 
-    return 0;
+    return slave->upstream_port;
+}
+
+/*****************************************************************************/
+
+/** Calculates which of ports 0-3 appears to be the upstream one.
+ */
+void ec_slave_calc_upstream_port(
+        ec_slave_t *slave /**< EtherCAT slave. */
+        )
+{
+    int i, replace;
+
+    // initially assume it's port 0 (normal connection order)
+    slave->upstream_port = 0;
+    replace = slave->ports[0].link.loop_closed || slave->ports[0].link.bypassed;
+
+    if (!slave->base_dc_supported) {
+        // we can't tell any better for non-DC slaves; assume we're right
+        EC_SLAVE_DBG(slave, 1, "DC not supported; assuming upstream port 0.\n");
+        return;
+    }
+
+    // any open & non-bypassed port with a lower receive time
+    // is a better candidate for the upstream port
+    for (i = 1; i < EC_MAX_PORTS; ++i) {
+        if (!slave->ports[i].link.loop_closed &&
+                !slave->ports[i].link.bypassed) {
+            int32_t diff = slave->ports[i].receive_time -
+                slave->ports[slave->upstream_port].receive_time;
+            if (diff < 0 || replace) {
+                slave->upstream_port = i;
+                replace = 0;
+            }
+        }
+    }
+    EC_SLAVE_DBG(slave, 1, "upstream port = %u\n", slave->upstream_port);
 }
 
 /*****************************************************************************/
@@ -865,15 +1125,17 @@ uint32_t ec_slave_calc_rtt_sum(
         )
 {
     uint32_t rtt_sum = 0, rtt;
-    unsigned int port_index = ec_slave_get_next_port(slave, 0);
+    unsigned int port_index = ec_slave_get_next_port(slave, slave->upstream_port);
 
-    while (port_index != 0) {
+    while (port_index != slave->upstream_port) {
         unsigned int prev_index =
-            ec_slave_get_previous_port(slave, port_index);
+            ec_slave_get_previous_normal_port(slave, port_index);
 
-        rtt = slave->ports[port_index].receive_time -
-            slave->ports[prev_index].receive_time;
-        rtt_sum += rtt;
+        if (!slave->ports[port_index].link.bypassed) {
+            rtt = slave->ports[port_index].receive_time -
+                slave->ports[prev_index].receive_time;
+            rtt_sum += rtt;
+        }
         port_index = ec_slave_get_next_port(slave, port_index);
     }
 
@@ -896,9 +1158,9 @@ ec_slave_t *ec_slave_find_next_dc_slave(
     if (slave->base_dc_supported) {
         dc_slave = slave;
     } else {
-        port_index = ec_slave_get_next_port(slave, 0);
+        port_index = ec_slave_get_next_port(slave, slave->upstream_port);
 
-        while (port_index != 0) {
+        while (port_index != slave->upstream_port) {
             ec_slave_t *next = slave->ports[port_index].next_slave;
 
             if (next) {
@@ -930,23 +1192,27 @@ void ec_slave_calc_port_delays(
     if (!slave->base_dc_supported)
         return;
 
-    port_index = ec_slave_get_next_port(slave, 0);
+    port_index = ec_slave_get_next_port(slave, slave->upstream_port);
 
-    while (port_index != 0) {
+    while (port_index != slave->upstream_port) {
         next_slave = slave->ports[port_index].next_slave;
         next_dc = ec_slave_find_next_dc_slave(next_slave);
 
         if (next_dc) {
             unsigned int prev_port =
-                ec_slave_get_previous_port(slave, port_index);
+                ec_slave_get_previous_normal_port(slave, port_index);
 
-            rtt = slave->ports[port_index].receive_time -
-                slave->ports[prev_port].receive_time;
+            if (!slave->ports[port_index].link.bypassed) {
+                rtt = slave->ports[port_index].receive_time -
+                    slave->ports[prev_port].receive_time;
+            } else {
+                rtt = 0; // FIXME
+            }
             next_rtt_sum = ec_slave_calc_rtt_sum(next_dc);
 
             slave->ports[port_index].delay_to_next_dc =
                 (rtt - next_rtt_sum) / 2; // FIXME
-            next_dc->ports[0].delay_to_next_dc =
+            next_dc->ports[next_dc->upstream_port].delay_to_next_dc =
                 (rtt - next_rtt_sum) / 2;
 
 #if 0
@@ -977,9 +1243,9 @@ void ec_slave_calc_transmission_delays_rec(
 
     slave->transmission_delay = *delay;
 
-    i = ec_slave_get_next_port(slave, 0);
+    i = ec_slave_get_next_port(slave, slave->upstream_port);
 
-    while (i != 0) {
+    while (i != slave->upstream_port) {
         ec_slave_port_t *port = &slave->ports[i];
         next_dc = ec_slave_find_next_dc_slave(port->next_slave);
         if (next_dc) {
@@ -994,7 +1260,7 @@ void ec_slave_calc_transmission_delays_rec(
         i = ec_slave_get_next_port(slave, i);
     }
 
-    *delay = *delay + slave->ports[0].delay_to_next_dc;
+    *delay = *delay + slave->ports[slave->upstream_port].delay_to_next_dc;
 }
 
 /*****************************************************************************/

@@ -39,6 +39,7 @@
 
 #include <linux/list.h>
 #include <linux/kobject.h>
+#include <linux/rtmutex.h>
 
 #include "globals.h"
 #include "datagram.h"
@@ -52,50 +53,51 @@
 /** Convenience macro for printing slave-specific information to syslog.
  *
  * This will print the message in \a fmt with a prefixed
- * "EtherCAT <INDEX>-<POSITION>: ", where INDEX is the master index and
- * POSITION is the slave's ring position.
+ * "EtherCAT <INDEX>-<DEV>-<POSITION>: ", where INDEX is the master index,
+ * DEV is the device, and POSITION is the slave's ring position.
  *
  * \param slave EtherCAT slave
  * \param fmt format string (like in printf())
  * \param args arguments (optional)
  */
 #define EC_SLAVE_INFO(slave, fmt, args...) \
-    printk(KERN_INFO "EtherCAT %u-%u: " fmt, slave->master->index, \
-            slave->ring_position, ##args)
+    printk(KERN_INFO "EtherCAT %u-%s-%u: " fmt, slave->master->index, \
+            ec_device_names[slave->device_index!=0], slave->ring_position, ##args)
 
 /** Convenience macro for printing slave-specific errors to syslog.
  *
  * This will print the message in \a fmt with a prefixed
- * "EtherCAT <INDEX>-<POSITION>: ", where INDEX is the master index and
- * POSITION is the slave's ring position.
+ * "EtherCAT <INDEX>-<DEV>-<POSITION>: ", where INDEX is the master index,
+ * DEV is the device, and POSITION is the slave's ring position.
  *
  * \param slave EtherCAT slave
  * \param fmt format string (like in printf())
  * \param args arguments (optional)
  */
 #define EC_SLAVE_ERR(slave, fmt, args...) \
-    printk(KERN_ERR "EtherCAT ERROR %u-%u: " fmt, slave->master->index, \
-            slave->ring_position, ##args)
+    printk(KERN_ERR "EtherCAT ERROR %u-%s-%u: " fmt, slave->master->index, \
+            ec_device_names[slave->device_index!=0], slave->ring_position, ##args)
 
 /** Convenience macro for printing slave-specific warnings to syslog.
  *
  * This will print the message in \a fmt with a prefixed
- * "EtherCAT <INDEX>-<POSITION>: ", where INDEX is the master index and
- * POSITION is the slave's ring position.
+ * "EtherCAT <INDEX>-<DEV>-<POSITION>: ", where INDEX is the master index,
+ * DEV is the device, and POSITION is the slave's ring position.
  *
  * \param slave EtherCAT slave
  * \param fmt format string (like in printf())
  * \param args arguments (optional)
  */
 #define EC_SLAVE_WARN(slave, fmt, args...) \
-    printk(KERN_WARNING "EtherCAT WARNING %u-%u: " fmt, \
-            slave->master->index, slave->ring_position, ##args)
+    printk(KERN_WARNING "EtherCAT WARNING %u-%s-%u: " fmt, \
+            slave->master->index, ec_device_names[slave->device_index!=0], \
+            slave->ring_position, ##args)
 
 /** Convenience macro for printing slave-specific debug messages to syslog.
  *
  * This will print the message in \a fmt with a prefixed
- * "EtherCAT <INDEX>-<POSITION>: ", where INDEX is the master index and
- * POSITION is the slave's ring position.
+ * "EtherCAT <INDEX>-<DEV>-<POSITION>: ", where INDEX is the master index,
+ * DEV is the device, and POSITION is the slave's ring position.
  *
  * \param slave EtherCAT slave
  * \param level Debug level. Master's debug level must be >= \a level for
@@ -106,10 +108,29 @@
 #define EC_SLAVE_DBG(slave, level, fmt, args...) \
     do { \
         if (slave->master->debug_level >= level) { \
-            printk(KERN_DEBUG "EtherCAT DEBUG %u-%u: " fmt, \
-                    slave->master->index, slave->ring_position, ##args); \
+            printk(KERN_DEBUG "EtherCAT DEBUG %u-%s-%u: " fmt, \
+                    slave->master->index, ec_device_names[slave->device_index!=0], \
+                    slave->ring_position, ##args); \
         } \
     } while (0)
+
+/*****************************************************************************/
+
+#ifdef EC_LOOP_CONTROL
+
+/** Slave port state.
+ */
+typedef enum {
+    EC_SLAVE_PORT_DOWN,
+    EC_SLAVE_PORT_WAIT,
+    EC_SLAVE_PORT_UP
+} ec_slave_port_state_t;
+
+/** Wait time in [ms] from detecting a link to opening a port.
+ */
+#define EC_PORT_WAIT_MS 2000
+
+#endif
 
 /*****************************************************************************/
 
@@ -123,11 +144,15 @@ typedef struct {
                                             measurement. */
     uint32_t delay_to_next_dc; /**< Delay to next slave with DC support behind
                                  this port [ns]. */
+#ifdef EC_LOOP_CONTROL
+    ec_slave_port_state_t state; /**< Port state for loop control. */
+    unsigned long link_detection_jiffies; /**< Time of link detection. */
+#endif
 } ec_slave_port_t;
 
 /*****************************************************************************/
 
-/** Slave information interface data.
+/** Extracted slave information interface data.
  */
 typedef struct {
     // Non-category data
@@ -171,6 +196,19 @@ typedef struct {
 
 /*****************************************************************************/
 
+/** Complete slave information interface data image.
+ */
+typedef struct {
+    struct list_head list; /**< List item. */
+
+    uint16_t *words;
+    size_t nwords; /**< Size of the SII contents in words. */
+
+    ec_sii_t sii; /**< Extracted SII data. */
+} ec_sii_image_t;
+
+/*****************************************************************************/
+
 /** EtherCAT slave.
  */
 struct ec_slave
@@ -183,15 +221,24 @@ struct ec_slave
     uint16_t ring_position; /**< Ring position. */
     uint16_t station_address; /**< Configured station address. */
     uint16_t effective_alias; /**< Effective alias address. */
-
+    // identification
+#ifdef EC_SII_CACHE
+    uint32_t effective_vendor_id; /**< Effective vendor ID. */
+    uint32_t effective_product_code; /**< Effective product code. */
+    uint32_t effective_revision_number; /**< Effective revision number. */
+    uint32_t effective_serial_number; /**< Effective serial number. */
+#endif
     ec_slave_port_t ports[EC_MAX_PORTS]; /**< Ports. */
+    uint8_t upstream_port; /**< Index of master-facing port. */
 
     // configuration
     ec_slave_config_t *config; /**< Current configuration. */
     ec_slave_state_t requested_state; /**< Requested application state. */
     ec_slave_state_t current_state; /**< Current application state. */
+    uint16_t last_al_error; /**< Last AL state error code */
     unsigned int error_flag; /**< Stop processing after an error. */
     unsigned int force_config; /**< Force (re-)configuration. */
+    unsigned int reboot; /**< Request reboot */
     uint16_t configured_rx_mailbox_offset; /**< Configured receive mailbox
                                              offset. */
     uint16_t configured_rx_mailbox_size; /**< Configured receive mailbox size.
@@ -215,23 +262,39 @@ struct ec_slave
     uint32_t transmission_delay; /**< DC system time transmission delay
                                    (offset from reference clock). */
 
-    // SII
-    uint16_t *sii_words; /**< Complete SII image. */
-    size_t sii_nwords; /**< Size of the SII contents in words. */
-
     // Slave information interface
-    ec_sii_t sii; /**< Extracted SII data. */
+    uint16_t *vendor_words; /**< First 16 words of SII image. */
+    ec_sii_image_t *sii_image;  /**< Current complete SII image. */
 
     struct list_head sdo_dictionary; /**< SDO dictionary list */
+    uint8_t scan_required; /**< Scan required. */
     uint8_t sdo_dictionary_fetched; /**< Dictionary has been fetched. */
     unsigned long jiffies_preop; /**< Time, the slave went to PREOP. */
 
     struct list_head sdo_requests; /**< SDO access requests. */
     struct list_head reg_requests; /**< Register access requests. */
-    struct list_head foe_requests; /**< FoE write requests. */
-    struct list_head soe_requests; /**< SoE write requests. */
+    struct list_head foe_requests; /**< FoE requests. */
+    struct list_head soe_requests; /**< SoE requests. */
+    struct list_head eoe_requests; /**< EoE set IP parameter requests. */
+    struct list_head mbg_requests; /**< EoE set IP parameter requests. */
+    struct list_head dict_requests; /**< Dictionary read requests. */
 
     ec_fsm_slave_t fsm; /**< Slave state machine. */
+
+    uint8_t read_mbox_busy; /**< Flag set during a mailbox read request. */
+    struct rt_mutex mbox_sem; /**< Semaphore protecting the check_mbox variable. */
+
+#ifdef EC_EOE
+    ec_mbox_data_t mbox_eoe_frag_data; /**< Received mailbox data for EoE, type frame fragment. */
+    ec_mbox_data_t mbox_eoe_init_data; /**< Received mailbox data for EoE, type eoe init reponse. */
+#endif
+    ec_mbox_data_t mbox_coe_data; /**< Received mailbox data for CoE. */
+    ec_mbox_data_t mbox_foe_data; /**< Received mailbox data for FoE. */
+    ec_mbox_data_t mbox_soe_data; /**< Received mailbox data for SoE. */
+    ec_mbox_data_t mbox_voe_data; /**< Received mailbox data for VoE. */
+    ec_mbox_data_t mbox_mbg_data; /**< Received mailbox data for MBox Gateway. */
+
+    uint8_t valid_mbox_data; /**< Received mailbox data is valid. */
 };
 
 /*****************************************************************************/
@@ -239,12 +302,17 @@ struct ec_slave
 // slave construction/destruction
 void ec_slave_init(ec_slave_t *, ec_master_t *, ec_device_index_t,
         uint16_t, uint16_t);
+
+void ec_slave_sii_image_init(ec_sii_image_t *);
+
 void ec_slave_clear(ec_slave_t *);
 
 void ec_slave_clear_sync_managers(ec_slave_t *);
 
 void ec_slave_request_state(ec_slave_t *, ec_slave_state_t);
-void ec_slave_set_state(ec_slave_t *, ec_slave_state_t);
+void ec_slave_set_dl_status(ec_slave_t *, uint16_t);
+void ec_slave_set_al_status(ec_slave_t *, ec_slave_state_t);
+void ec_slave_request_reboot(ec_slave_t *);
 
 // SII categories
 int ec_slave_fetch_sii_strings(ec_slave_t *, const uint8_t *, size_t);
@@ -265,8 +333,12 @@ uint16_t ec_slave_sdo_count(const ec_slave_t *);
 const ec_pdo_t *ec_slave_find_pdo(const ec_slave_t *, uint16_t);
 void ec_slave_attach_pdo_names(ec_slave_t *);
 
+void ec_slave_calc_upstream_port(ec_slave_t *);
 void ec_slave_calc_port_delays(ec_slave_t *);
 void ec_slave_calc_transmission_delays_rec(ec_slave_t *, uint32_t *);
+
+void ec_read_mbox_lock_clear(ec_slave_t *);
+int ec_read_mbox_locked(ec_slave_t *);
 
 /*****************************************************************************/
 

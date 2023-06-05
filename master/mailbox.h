@@ -45,6 +45,27 @@
  */
 #define EC_MBOX_HEADER_SIZE 6
 
+/** Mailbox types.
+ *
+ * These are used in the 'Type' field of the mailbox header.
+ */
+enum {
+    EC_MBOX_TYPE_AOE = 0x01,
+    EC_MBOX_TYPE_EOE = 0x02,
+    EC_MBOX_TYPE_COE = 0x03,
+    EC_MBOX_TYPE_FOE = 0x04,
+    EC_MBOX_TYPE_SOE = 0x05,
+    EC_MBOX_TYPE_VOE = 0x0f,
+};
+
+/*****************************************************************************/
+
+/**
+   Mailbox error codes.
+*/
+
+extern const ec_code_msg_t mbox_error_messages[];
+  
 /*****************************************************************************/
 
 uint8_t *ec_slave_mbox_prepare_send(const ec_slave_t *, ec_datagram_t *,
@@ -52,7 +73,7 @@ uint8_t *ec_slave_mbox_prepare_send(const ec_slave_t *, ec_datagram_t *,
 int      ec_slave_mbox_prepare_check(const ec_slave_t *, ec_datagram_t *);
 int      ec_slave_mbox_check(const ec_datagram_t *);
 int      ec_slave_mbox_prepare_fetch(const ec_slave_t *, ec_datagram_t *);
-uint8_t *ec_slave_mbox_fetch(const ec_slave_t *, const ec_datagram_t *,
+uint8_t *ec_slave_mbox_fetch(const ec_slave_t *, ec_mbox_data_t *,
                              uint8_t *, size_t *);
 
 /*****************************************************************************/

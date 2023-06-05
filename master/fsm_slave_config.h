@@ -60,25 +60,27 @@ struct ec_fsm_slave_config
     ec_fsm_pdo_t *fsm_pdo; /**< PDO configuration state machine. */
 
     ec_slave_t *slave; /**< Slave the FSM runs on. */
-    void (*state)(ec_fsm_slave_config_t *); /**< State function. */
+    void (*state)(ec_fsm_slave_config_t *, ec_datagram_t *); /**< State function. */
     unsigned int retries; /**< Retries on datagram timeout. */
     ec_sdo_request_t *request; /**< SDO request for SDO configuration. */
     ec_sdo_request_t request_copy; /**< Copied SDO request. */
     ec_soe_request_t *soe_request; /**< SDO request for SDO configuration. */
     ec_soe_request_t soe_request_copy; /**< Copied SDO request. */
+    unsigned long last_diff_ms; /**< For sync reporting. */
     unsigned long jiffies_start; /**< For timeout calculations. */
     unsigned int take_time; /**< Store jiffies after datagram reception. */
 };
 
 /*****************************************************************************/
 
-void ec_fsm_slave_config_init(ec_fsm_slave_config_t *, ec_datagram_t *,
+void ec_fsm_slave_config_init(ec_fsm_slave_config_t *, ec_slave_t *,
         ec_fsm_change_t *, ec_fsm_coe_t *, ec_fsm_soe_t *, ec_fsm_pdo_t *);
 void ec_fsm_slave_config_clear(ec_fsm_slave_config_t *);
 
-void ec_fsm_slave_config_start(ec_fsm_slave_config_t *, ec_slave_t *);
+void ec_fsm_slave_config_start(ec_fsm_slave_config_t *);
+void ec_fsm_slave_config_quick_start(ec_fsm_slave_config_t *);
 
-int ec_fsm_slave_config_exec(ec_fsm_slave_config_t *);
+int ec_fsm_slave_config_exec(ec_fsm_slave_config_t *, ec_datagram_t *);
 int ec_fsm_slave_config_success(const ec_fsm_slave_config_t *);
 
 /*****************************************************************************/
